@@ -78,9 +78,10 @@ class AdFriendlinessTests(unittest.TestCase):
 
 class BoundaryJudgeTests(unittest.TestCase):
     def test_unknown_ids_and_out_of_range_scores_fail_closed(self):
+        from PIL import Image
+
         with tempfile.NamedTemporaryFile(suffix=".jpg") as frame:
-            frame.write(b"jpeg")
-            frame.flush()
+            Image.new("RGB", (398, 224), (40, 80, 60)).save(frame.name)
             candidates = [{"candidate_id": "candidate-001", "time": 5.0, "shot_transition": "cut", "pause_seconds": 0.0,
                            "speech_at_cut": 0.0, "before_text": "", "after_text": ""}]
             good = fake_model()("m", "boundary_judgements", {}, "", [{"type": "input_text", "text": "Candidate candidate-001 at"}], 1)
@@ -102,6 +103,86 @@ class BoundaryJudgeTests(unittest.TestCase):
             with patch("scene_ai.call_model", return_value=unfinished):
                 self.assertFalse(scene_ai.judge_boundaries(talking, lambda _t: frame.name, "m", 10.0)["candidate-001"]["dialogue_complete"])
             self.assertIn("outside 0–1", judged["reason"])
+
+
+class RateLimitTests(unittest.TestCase):
+    class Response:
+        def __init__(self, body):
+            self.body = body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, _limit):
+            return json.dumps(self.body).encode()
+
+    @staticmethod
+    def http_error(code, error_code, headers):
+        import email.message
+        import urllib.error
+
+        message = email.message.Message()
+        for name, value in headers.items():
+            message[name] = value
+        return urllib.error.HTTPError(scene_ai.OPENAI_API_URL, code, "error", message,
+                                      io.BytesIO(json.dumps({"error": {"code": error_code}}).encode()))
+
+    def test_retry_after_headers_are_parsed(self):
+        self.assertEqual(scene_ai._retry_after({"retry-after": "3"}), 3.0)
+        self.assertAlmostEqual(scene_ai._retry_after({"x-ratelimit-reset-tokens": "1m2.5s", "x-ratelimit-reset-requests": "250ms"}), 62.5)
+        self.assertIsNone(scene_ai._retry_after({}))
+
+    def test_rate_limit_is_retried_after_the_server_wait_and_quota_fails_fast(self):
+        ok = self.Response({"output": [{"content": [{"type": "output_text", "text": '{"boundaries": []}'}]}]})
+        limited = self.http_error(429, "rate_limit_exceeded", {"x-ratelimit-reset-tokens": "1.5s"})
+        with patch.dict("os.environ", {"OPENAI_API_KEY": "k"}), patch("scene_ai.time.sleep") as sleep, \
+                patch("scene_ai.urllib.request.urlopen", side_effect=[limited, ok]) as request:
+            self.assertEqual(scene_ai.call_model("m", "n", {}, "s", [], 10), {"boundaries": []})
+        self.assertEqual(request.call_count, 2)
+        self.assertGreaterEqual(sleep.call_args.args[0], 1.5)
+        quota = self.http_error(429, "insufficient_quota", {})
+        with patch.dict("os.environ", {"OPENAI_API_KEY": "k"}), patch("scene_ai.time.sleep"), \
+                patch("scene_ai.urllib.request.urlopen", side_effect=[quota]) as request:
+            with self.assertRaisesRegex(scene_ai.SceneAIError, "quota is exhausted"):
+                scene_ai.call_model("m", "n", {}, "s", [], 10)
+        self.assertEqual(request.call_count, 1)
+        errors = [self.http_error(429, "rate_limit_exceeded", {"retry-after": "1"}) for _ in range(scene_ai.MAX_ATTEMPTS)]
+        with patch.dict("os.environ", {"OPENAI_API_KEY": "k"}), patch("scene_ai.time.sleep"), \
+                patch("scene_ai.urllib.request.urlopen", side_effect=errors):
+            with self.assertRaisesRegex(scene_ai.SceneAIError, "HTTP 429 \\(rate_limit_exceeded\\) after 6 attempt"):
+                scene_ai.call_model("m", "n", {}, "s", [], 10)
+
+    def test_token_budget_waits_for_the_minute_window(self):
+        budget = scene_ai.TokenBudget(100)
+        clock = [0.0]
+        with patch("scene_ai.time.monotonic", side_effect=lambda: clock[0]), \
+                patch("scene_ai.time.sleep", side_effect=lambda seconds: clock.__setitem__(0, clock[0] + seconds)) as sleep:
+            budget.acquire(80)
+            budget.acquire(80)  # would exceed 100 within the minute, so it waits for the window
+            self.assertEqual(sleep.call_count, 1)
+            self.assertGreaterEqual(clock[0], 60)
+            budget.acquire(500)  # larger than the whole budget: allowed once the window is empty
+        self.assertGreaterEqual(clock[0], 120)
+
+    def test_frames_are_tiled_into_one_image(self):
+        from PIL import Image
+
+        with tempfile.TemporaryDirectory() as directory:
+            paths = []
+            for index in range(3):
+                path = Path(directory) / f"f{index}.jpg"
+                Image.new("RGB", (398, 224), (index * 60, 20, 20)).save(path)
+                paths.append(str(path))
+            image = scene_ai._composite(paths, columns=2)
+        import base64
+
+        sheet = Image.open(io.BytesIO(base64.b64decode(image["image_url"].split(",", 1)[1])))
+        self.assertEqual((image["detail"], sheet.size), ("low", (802, 454)))
+        self.assertEqual(scene_ai.estimate_tokens([image, {"type": "input_text", "text": "x" * 100}], "s" * 100, 50),
+                         scene_ai.IMAGE_TOKENS + 100 + 50)
 
 
 @unittest.skipUnless(HAS_FFMPEG, "FFmpeg is not installed")

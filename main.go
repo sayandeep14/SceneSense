@@ -33,8 +33,8 @@ const (
 	maxUploadBytes    = 500 << 20
 	analysisTimeout   = 20 * time.Minute
 	// These mirror ai/versions.py and ai/scene_ai.py; the cache-key parity test runs the Python worker.
-	scenePromptVer  = "scene-describe-v1"
-	breakPromptVer  = "scene-boundary-judge-v3"
+	scenePromptVer  = "scene-describe-v2-keyframe-grid"
+	breakPromptVer  = "scene-boundary-judge-v4-paired-frames"
 	analysisVersion = "scene-fusion-pipeline-v1"
 	shotDetectorVer = "pyscenedetect-adaptive-threshold+twin-dissolve-v1"
 	clipModelVer    = "clip-vit-b32-onnx-int8-d15189d"

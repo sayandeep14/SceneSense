@@ -4,17 +4,26 @@ deterministic ad-friendliness scoring. Only the compressed shortlist reaches the
 from __future__ import annotations
 
 import base64
+import io
 import json
 import os
+import re
+import threading
+import time
 import urllib.error
 import urllib.request
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable
 
 OPENAI_API_URL = "https://api.openai.com/v1/responses"
-BOUNDARY_PROMPT_VERSION = "scene-boundary-judge-v3"
-SCENE_DESCRIBE_PROMPT_VERSION = "scene-describe-v1"
-BOUNDARY_BATCH, SCENE_BATCH, PARALLEL_REQUESTS = 8, 6, 4
+BOUNDARY_PROMPT_VERSION = "scene-boundary-judge-v4-paired-frames"
+SCENE_DESCRIBE_PROMPT_VERSION = "scene-describe-v2-keyframe-grid"
+BOUNDARY_BATCH, SCENE_BATCH, PARALLEL_REQUESTS = 8, 6, 2
+# gpt-4o-mini bills every low-detail image as ~2,833 input tokens, so images dominate the budget.
+IMAGE_TOKENS = 2833
+MAX_ATTEMPTS = 6
+MAX_RETRY_WAIT = 60.0
 KEYFRAMES_PER_SCENE = 3
 
 SENSITIVE_CONTEXTS = [
@@ -88,10 +97,81 @@ def clock(seconds: float) -> str:
     return f"{whole // 60}:{whole % 60:02d}.{int((seconds - whole) * 10)}"
 
 
-def _image(path: str) -> dict[str, Any]:
-    with open(path, "rb") as source:
-        encoded = base64.b64encode(source.read()).decode("ascii")
+def _composite(paths: list[str], columns: int) -> dict[str, Any]:
+    """Tile frames into one JPEG so several frames cost a single image's tokens."""
+    from PIL import Image
+
+    frames = []
+    for path in paths:
+        with Image.open(path) as image:
+            frames.append(image.convert("RGB").resize((398, 224)))
+    rows = (len(frames) + columns - 1) // columns
+    gap = 6
+    sheet = Image.new("RGB", (columns * 398 + (columns - 1) * gap, rows * 224 + (rows - 1) * gap), (0, 0, 0))
+    for index, frame in enumerate(frames):
+        sheet.paste(frame, ((index % columns) * (398 + gap), (index // columns) * (224 + gap)))
+    buffer = io.BytesIO()
+    sheet.save(buffer, format="JPEG", quality=82)
+    encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
     return {"type": "input_image", "image_url": "data:image/jpeg;base64," + encoded, "detail": "low"}
+
+
+class TokenBudget:
+    """Keeps estimated input tokens under a per-minute budget across concurrent requests."""
+
+    def __init__(self, per_minute: int):
+        self.per_minute = per_minute
+        self.events: deque[tuple[float, int]] = deque()
+        self.lock = threading.Lock()
+
+    def acquire(self, tokens: int) -> None:
+        while True:
+            with self.lock:
+                now = time.monotonic()
+                while self.events and now - self.events[0][0] >= 60:
+                    self.events.popleft()
+                used = sum(amount for _, amount in self.events)
+                if not self.events or used + tokens <= self.per_minute:
+                    self.events.append((now, tokens))
+                    return
+                wait = 60 - (now - self.events[0][0]) + 0.05
+            time.sleep(wait)
+
+
+BUDGET = TokenBudget(int(os.environ.get("OPENAI_TPM_BUDGET", "150000") or 150000))
+
+
+def estimate_tokens(content: list[dict], system: str, max_tokens: int) -> int:
+    text = len(system) + sum(len(item.get("text", "")) for item in content if item["type"] == "input_text")
+    images = sum(1 for item in content if item["type"] == "input_image")
+    return images * IMAGE_TOKENS + text // 2 + max_tokens
+
+
+def _retry_after(headers: Any) -> float | None:
+    """Seconds to wait from Retry-After or OpenAI's x-ratelimit-reset-* headers (e.g. "1.5s", "250ms", "1m2s")."""
+    value = headers.get("retry-after") if headers else None
+    if value:
+        try:
+            return float(value)
+        except ValueError:
+            pass
+    waits = []
+    for name in ("x-ratelimit-reset-tokens", "x-ratelimit-reset-requests"):
+        raw = headers.get(name) if headers else None
+        parts = re.findall(r"([0-9.]+)(ms|s|m|h)", raw or "")
+        if parts:
+            scale = {"ms": 0.001, "s": 1, "m": 60, "h": 3600}
+            waits.append(sum(float(number) * scale[unit] for number, unit in parts))
+    return max(waits) if waits else None
+
+
+def _error_code(exc: urllib.error.HTTPError) -> str:
+    try:
+        detail = json.loads(exc.read(64 * 1024))
+        code = (detail.get("error") or {}).get("code") if isinstance(detail, dict) else None
+        return code if isinstance(code, str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", code) else ""
+    except (json.JSONDecodeError, OSError, AttributeError):
+        return ""
 
 
 def output_text(payload: dict[str, Any]) -> str:
@@ -117,20 +197,35 @@ def call_model(model: str, name: str, schema: dict, system: str, content: list[d
                   {"role": "user", "content": content}],
         "text": {"format": {"type": "json_schema", "name": name, "strict": True, "schema": schema}},
     }
-    request = urllib.request.Request(
-        OPENAI_API_URL, data=json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode("utf-8"),
-        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json",
-                 "User-Agent": "hoichoi-contextual-ad-lab/0.2"}, method="POST",
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=180) as response:
-            payload = json.loads(response.read(8 * 1024 * 1024))
-    except urllib.error.HTTPError as exc:
-        raise SceneAIError(f"OpenAI scene analysis returned HTTP {exc.code}.") from exc
-    except (urllib.error.URLError, TimeoutError) as exc:
-        raise SceneAIError("Could not reach OpenAI scene analysis, or the request timed out.") from exc
-    except (json.JSONDecodeError, OSError) as exc:
-        raise SceneAIError("OpenAI scene analysis returned an unreadable response.") from exc
+    data = json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    BUDGET.acquire(estimate_tokens(content, system, max_tokens))
+    payload = None
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        request = urllib.request.Request(
+            OPENAI_API_URL, data=data,
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json",
+                     "User-Agent": "hoichoi-contextual-ad-lab/0.2"}, method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=180) as response:
+                payload = json.loads(response.read(8 * 1024 * 1024))
+            break
+        except urllib.error.HTTPError as exc:
+            code = _error_code(exc)
+            if code == "insufficient_quota":
+                raise SceneAIError("OpenAI quota is exhausted for this key (HTTP 429 insufficient_quota); "
+                                   "check the account's billing.") from exc
+            if exc.code not in (429, 500, 502, 503, 504) or attempt == MAX_ATTEMPTS:
+                suffix = f" ({code})" if code else ""
+                raise SceneAIError(f"OpenAI scene analysis returned HTTP {exc.code}{suffix} after {attempt} attempt(s).") from exc
+            wait = _retry_after(exc.headers) or 2.0 * 2 ** (attempt - 1)
+            time.sleep(min(MAX_RETRY_WAIT, wait + 0.25 * attempt))
+        except (urllib.error.URLError, TimeoutError) as exc:
+            if attempt == MAX_ATTEMPTS:
+                raise SceneAIError("Could not reach OpenAI scene analysis, or the request timed out.") from exc
+            time.sleep(min(MAX_RETRY_WAIT, 2.0 * 2 ** (attempt - 1)))
+        except (json.JSONDecodeError, OSError) as exc:
+            raise SceneAIError("OpenAI scene analysis returned an unreadable response.") from exc
     try:
         return json.loads(output_text(payload))
     except json.JSONDecodeError as exc:
@@ -152,7 +247,8 @@ def _unit(value: Any, field: str) -> float:
 
 BOUNDARY_SYSTEM = (
     "You judge candidate scene boundaries in Bengali drama for a contextual ad planner. Each candidate is a "
-    "detected shot boundary with one frame about a second before it, one after, the ASR dialogue on both sides, and "
+    "detected shot boundary with one image showing the frame about a second before it (left) and after it (right), "
+    "the ASR dialogue on both sides, and "
     "measured signals. Decide whether the story moves to a new scene (new place, time, activity, or story beat) or "
     "whether this is only a camera change inside the same scene (reverse angle, close-up, cutaway). The two frames "
     "are the primary evidence: if they show a different place or activity, it is a new scene even when dialogue seems "
@@ -182,9 +278,9 @@ def judge_boundaries(candidates: list[dict], pool_frame: Callable[[float], str],
                 f"'{audio.get('before', '')}' → '{audio.get('after', '')}' (shift {audio.get('shift', 0):.2f}), "
                 f"quiet {item['pause_seconds']:.1f} s, speech at cut {item['speech_at_cut']:.2f}.\n"
                 f"Dialogue before: «{item['before_text'][-350:]}»\nDialogue after: «{item['after_text'][:350]}»\n"
-                "Frame before, then frame after:")})
-            content.append(_image(pool_frame(max(0.0, item["time"] - offset))))
-            content.append(_image(pool_frame(min(duration, item["time"] + offset))))
+                "One image: left = frame before the cut, right = frame after:")})
+            content.append(_composite([pool_frame(max(0.0, item["time"] - offset)),
+                                       pool_frame(min(duration, item["time"] + offset))], columns=2))
         result = call_model(model, "boundary_judgements", BOUNDARY_SCHEMA, BOUNDARY_SYSTEM, content, 400 * len(batch) + 400)
         done[0] += len(batch)
         if progress:
@@ -229,7 +325,8 @@ def judge_boundaries(candidates: list[dict], pool_frame: Callable[[float], str],
 
 SCENE_SYSTEM = (
     "You are a cautious Bengali drama scene analyst for contextual ad safety. Each scene comes with a few keyframes "
-    "and its ASR dialogue. Summarise it briefly, list visible or spoken activities and the mood, tag sensitive "
+    "(tiled into one image) and its ASR dialogue. Summarise it briefly, list visible or spoken activities and the "
+    "mood, tag sensitive "
     "contexts only when supported, and state whether the dialogue ends on a completed thought. For every scene, score "
     "every supplied synthetic brand once from 0 to 1 against its target contexts, activity, and mood, with matched "
     "contexts and a short reason; an independent deterministic filter blocks negative contexts. Distinguish visible "
@@ -248,8 +345,10 @@ def describe_scenes(scenes: list[dict], model: str, brand_text: str,
         for scene in batch:
             content.append({"type": "input_text", "text": (
                 f"Scene {scene['scene_id']} ({clock(scene['start'])}–{clock(scene['end'])}, {scene['shot_count']} shots). "
-                f"Dialogue: «{scene['text'] or '[no dialogue detected]'}»\nKeyframes:")})
-            content.extend(_image(path) for path in scene["keyframes"])
+                f"Dialogue: «{scene['text'] or '[no dialogue detected]'}»\n"
+                "One image: keyframes in time order, left to right then top to bottom:")})
+            if scene["keyframes"]:
+                content.append(_composite(scene["keyframes"], columns=2))
         result = call_model(model, "scene_descriptions", SCENES_SCHEMA, SCENE_SYSTEM, content, 1100 * len(batch) + 400)
         done[0] += len(batch)
         if progress:
