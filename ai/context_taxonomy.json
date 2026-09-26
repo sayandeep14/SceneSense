@@ -5,7 +5,12 @@
     "funeral",
     "bereavement",
     "death",
-    "condolence"
+    "condolence",
+    "শোক",
+    "শোকের",
+    "মৃত্যু",
+    "শেষকৃত্য",
+    "শ্রাদ্ধ"
   ],
   "medical": [
     "hospital",
@@ -14,7 +19,12 @@
     "illness",
     "sick",
     "disease",
-    "patient"
+    "patient",
+    "হাসপাতাল",
+    "হাসপাতালে",
+    "অসুস্থ",
+    "রোগ",
+    "চিকিৎসা"
   ],
   "violence": [
     "violence",
@@ -22,7 +32,10 @@
     "abuse",
     "attack",
     "assault",
-    "fight"
+    "fight",
+    "নির্যাতন",
+    "মারামারি",
+    "আক্রমণ"
   ],
   "injury": [
     "injury",
@@ -30,7 +43,10 @@
     "injured",
     "accident",
     "crash",
-    "collision"
+    "collision",
+    "আঘাত",
+    "দুর্ঘটনা",
+    "দুর্ঘটনায়"
   ],
   "bathroom": [
     "bathroom",
@@ -48,17 +64,26 @@
     "financial distress",
     "debt",
     "bankruptcy",
-    "poverty"
+    "poverty",
+    "ঋণ",
+    "দারিদ্র্য"
   ],
   "religious_ritual": [
     "religious ritual",
     "prayer",
-    "worship"
+    "worship",
+    "পূজা",
+    "পূজার",
+    "প্রার্থনা",
+    "নামাজ",
+    "আরতি"
   ],
   "children_at_risk": [
     "children at risk",
     "child abuse",
-    "child in danger"
+    "child in danger",
+    "শিশু নির্যাতন",
+    "শিশু বিপদে"
   ],
   "celebration": [
     "celebration",
