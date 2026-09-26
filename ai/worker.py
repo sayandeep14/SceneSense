@@ -34,6 +34,7 @@ SCENE_PROMPT_VERSION = "scene-evidence-v3"
 PHASE2_SCENE_PROMPT_VERSION = "scene-evidence-v2"
 PIPELINE_CACHE_VERSION = "phase3-break-v3"
 PHASE2_CACHE_VERSION = "phase2-sarvam-asr-v1"
+PREVIOUS_PHASE3_CACHE_VERSION = "phase3-break-v2"
 CUT_DETECTION_THRESHOLD = 0.30
 MAX_AUDIO_BYTES = 25 * 1024 * 1024
 MAX_SCENE_FRAMES = 16
@@ -551,16 +552,16 @@ def detect_shot_boundaries(video_path: Path, duration: float) -> list[float]:
     return boundaries[:1000]
 
 
-def _cache_key(content_hash: str, *, phase2: bool = False) -> str:
+def _cache_key(content_hash: str, *, phase2: bool = False, previous_phase3: bool = False) -> str:
     provider = _asr_provider()
     parts = [
         content_hash, provider, _provider_model(provider), SCENE_MODEL,
-        PHASE2_SCENE_PROMPT_VERSION if phase2 else SCENE_PROMPT_VERSION,
+        PHASE2_SCENE_PROMPT_VERSION if phase2 or previous_phase3 else SCENE_PROMPT_VERSION,
     ]
     if not phase2:
         parts.extend((BREAK_MODEL, BREAK_PROMPT_VERSION))
     parts.extend((
-        PHASE2_CACHE_VERSION if phase2 else PIPELINE_CACHE_VERSION,
+        PHASE2_CACHE_VERSION if phase2 else PREVIOUS_PHASE3_CACHE_VERSION if previous_phase3 else PIPELINE_CACHE_VERSION,
         str(MAX_SCENE_FRAMES), str(CUT_DETECTION_THRESHOLD), str(MAX_SHOT_BOUNDARIES_IN_PROMPT),
         "silencedetect:-32dB:0.45s",
     ))
@@ -850,10 +851,13 @@ def run(request: dict[str, Any]) -> dict[str, Any]:
     cached = _read_cache(cache_path, content_hash, cache_key)
     if cached is not None:
         return cached
-    phase2_key = _cache_key(content_hash, phase2=True)
-    phase2_evidence = _read_cache(work_dir / f"analysis-{phase2_key}.json", content_hash, phase2_key)
-    if phase2_evidence is not None:
-        output = {**phase2_evidence, "cache_key": cache_key, "cache_hit": False, "evidence_cache_hit": True}
+    previous_key = _cache_key(content_hash, previous_phase3=True)
+    previous_evidence = _read_cache(work_dir / f"analysis-{previous_key}.json", content_hash, previous_key)
+    if previous_evidence is None:
+        phase2_key = _cache_key(content_hash, phase2=True)
+        previous_evidence = _read_cache(work_dir / f"analysis-{phase2_key}.json", content_hash, phase2_key)
+    if previous_evidence is not None:
+        output = {**previous_evidence, "cache_key": cache_key, "cache_hit": False, "evidence_cache_hit": True}
         if output.get("scene_prompt_version") != SCENE_PROMPT_VERSION:
             _refresh_scenes(output, video_path, work_dir)
     else:

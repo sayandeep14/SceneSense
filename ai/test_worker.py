@@ -119,6 +119,43 @@ class WorkerTests(unittest.TestCase):
             self.assertNotEqual(result["cache_key"], phase2_key)
             self.assertTrue((root / f"analysis-{result['cache_key']}.json").exists())
 
+    def test_scene_prompt_upgrade_reuses_previous_phase3_cache(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            video = root / "fixture.mp4"
+            video.write_bytes(b"synthetic-media")
+            digest = worker._file_sha256(video)
+            previous_key = worker._cache_key(digest, previous_phase3=True)
+            evidence = {
+                "duration": 80, "language": "bengali", "text": "কথা শেষ।",
+                "model": "sarvam/saaras:v4", "segments": [{"start": 0, "end": 25, "text": "কথা শেষ।"}],
+                "silence_intervals": [{"start": 39, "end": 41, "duration": 2}],
+                "shot_boundaries": [40], "scenes": [{"scene_id": "old", "start": 0, "end": 25,
+                                                   "summary": "Old chunk-boundary scene"}],
+                "scene_analysis_status": "complete", "scene_prompt_version": worker.PHASE2_SCENE_PROMPT_VERSION,
+                "content_hash": digest, "cache_key": previous_key,
+            }
+            worker._write_cache(root / f"analysis-{previous_key}.json", {
+                "content_hash": digest, "cache_key": previous_key, "result": evidence,
+            })
+            improved_scenes = [{"scene_id": "new", "start": 0, "end": 40,
+                                "summary": "One narrative scene", "dialogue_state": "completed_thought"}]
+            brands = Path(__file__).resolve().parent.parent / "assets" / "brands.json"
+            with patch("worker.extract_audio", side_effect=AssertionError("ASR should be reused")):
+                with patch("worker.sample_frames", return_value=[{"time": 0, "data_url": "fixture"}]):
+                    with patch("worker.analyze_scenes", return_value=improved_scenes):
+                        with patch("worker.score_candidates", side_effect=lambda candidates, model: [
+                            {**item, "naturalness": 0.9, "disruption_risk": 0.1,
+                             "confidence": 0.9, "ai_reason": "Natural scene transition.",
+                             "ai_model": model, "ai_prompt_version": breaks.BREAK_PROMPT_VERSION}
+                            for item in candidates]):
+                            result = worker.run({"video_path": str(video), "work_dir": str(root),
+                                                 "brands_path": str(brands), "content_hash": digest})
+            self.assertTrue(result["evidence_cache_hit"])
+            self.assertEqual(result["scenes"], improved_scenes)
+            self.assertEqual(result["scene_prompt_version"], worker.SCENE_PROMPT_VERSION)
+            self.assertNotEqual(result["cache_key"], previous_key)
+
     def test_loads_hackathon_brand_catalogue(self):
         catalog_path = Path(__file__).resolve().parent.parent / "assets" / "brands.json"
         brands = worker.load_brand_catalog(catalog_path)
