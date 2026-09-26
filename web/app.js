@@ -1863,14 +1863,16 @@
   document.querySelector("#delete-video").addEventListener("click", () => {
     if (activeJob) deleteVideo(activeJob.id, activeJob.fileName);
   });
-  document.querySelector("#new-upload").addEventListener("click", () => {
+  function startNewVideo() {
     document.querySelector("#video-preview").removeAttribute("src");
     document.querySelector("#video-preview").load();
     assetPanel.classList.add("hidden");
     dropzone.classList.remove("hidden");
     input.value = "";
     dropzone.focus();
-  });
+  }
+  document.querySelector("#new-upload").addEventListener("click", startNewVideo);
+  document.querySelector("#library-add-video").addEventListener("click", startNewVideo);
 
   for (const eventName of ["dragenter", "dragover"]) {
     dropzone.addEventListener(eventName, (event) => {
