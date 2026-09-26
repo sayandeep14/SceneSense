@@ -17,6 +17,8 @@ make run
 
 `make run` loads the ignored `.env` file and starts the Go app with the `.venv` Python. Set `ASR_PROVIDER=groq` (default) with `GROQ_API_KEY`, or `ASR_PROVIDER=sarvam` with `SARVAM_API_KEY`. Set `OPENAI_API_KEY` for the boundary judge, scene descriptions, and transcript embeddings; optional overrides are `OPENAI_VISION_MODEL`, `OPENAI_BREAK_MODEL`, and `OPENAI_EMBEDDING_MODEL`. Never commit these keys. `DEMO_ACCESS_PASSWORD` enables HTTP Basic Auth (username `demo`); Railway deployments refuse to start without it, and `/healthz` stays public. Uploads and job sidecars live in `UPLOAD_DIR` (default `data/uploads`); `AD_LIBRARY_DIR` defaults to `<UPLOAD_DIR>/ads`, and `MODELS_DIR` to `models`.
 
+Saaras retries each 25-second audio chunk once after transient timeouts, 429s, or provider 5xx errors, with a 120-second per-request timeout and short backoff. Auth/billing errors fail immediately. It never silently switches to Whisper: a failed analysis stays retryable so Bengali transcript quality is not quietly degraded.
+
 The container starts a small Rust observability collector alongside Go. Locally, Rust 1.91+ is optional: run `cargo run --manifest-path telemetry/Cargo.toml -- data/uploads/observability.json` in a second terminal to populate Pipeline pulse. Go drops telemetry into a bounded, best-effort queue; if the collector is absent or fails, uploads, inference, and playback continue. The collector persists aggregate stage timings and delivery-event counts to the mounted volume; `GET /api/observability` serves a read-only snapshot behind the same demo access gate. No API keys or transcript contents are sent to it.
 
 ## How ad breaks are chosen
