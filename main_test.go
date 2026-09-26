@@ -33,7 +33,7 @@ func TestAnalysisCacheKeyIncludesConfiguredPipelineVersions(t *testing.T) {
 	contentHash := "fixture-content-hash"
 	parts := strings.Join([]string{
 		contentHash, "groq", "whisper-large-v3-turbo", "gpt-4o-mini", "scene-evidence-v4-transition-probes",
-		"gpt-4o-mini", "break-naturalness-v2", "phase4-transition-v4",
+		"gpt-4o-mini", "break-naturalness-v2", "phase4-transition-v5",
 		"16", "0.3", "300", "silencedetect:-32dB:0.45s", brandCatalogHash,
 	}, "|")
 	expected := sha256.Sum256([]byte(parts))
@@ -63,7 +63,7 @@ func TestAnalysisCacheKeyIncludesConfiguredPipelineVersions(t *testing.T) {
 	}
 	parts = strings.Join([]string{
 		contentHash, "sarvam", "saaras:v4", "gpt-4o-mini", "scene-evidence-v4-transition-probes",
-		"gpt-4o-mini", "break-naturalness-v2", "phase4-transition-v4",
+		"gpt-4o-mini", "break-naturalness-v2", "phase4-transition-v5",
 		"16", "0.3", "300", "silencedetect:-32dB:0.45s", brandCatalogHash,
 	}, "|")
 	expected = sha256.Sum256([]byte(parts))

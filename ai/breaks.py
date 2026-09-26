@@ -87,10 +87,23 @@ def generate_candidates(evidence: dict[str, Any]) -> list[dict[str, Any]]:
                           if float(segment["start"]) < anchor < float(segment["end"])
                           and float(segment["end"]) - float(segment["start"]) > 6), None)
         nearby = [scene for scene in scenes if float(scene["start"]) <= anchor + 2 and float(scene["end"]) >= anchor - 2]
-        preceding = max(
-            (scene for scene in scenes if float(scene["start"]) < anchor and float(scene["end"]) <= anchor + 2),
-            key=lambda scene: float(scene["end"]), default=None,
-        )
+        preceding = None
+        if any(item.get("continuity") == "new_scene" and abs(float(item["time"]) - anchor) <= 1.2
+               for item in transitions):
+            preceding = max(
+                (scene for scene in scenes if float(scene["start"]) < anchor and float(scene["end"]) <= anchor + 2),
+                key=lambda scene: float(scene["end"]), default=None,
+            )
+        if preceding is None:
+            preceding = max(
+                (scene for scene in scenes if float(scene["start"]) <= anchor <= float(scene["end"])),
+                key=lambda scene: float(scene["start"]), default=None,
+            )
+        if preceding is None:
+            preceding = max(
+                (scene for scene in scenes if float(scene["start"]) < anchor),
+                key=lambda scene: float(scene["end"]), default=None,
+            )
         preceding_brand_matches = list((preceding or {}).get("brand_matches", []))
         brand_recommendations = [item for item in preceding_brand_matches if item.get("recommended")][:3]
         blocked_brand_matches = [item for item in preceding_brand_matches if item.get("blocked")][:3]

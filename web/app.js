@@ -76,8 +76,15 @@
   }
 
   function precedingSceneBrandMatches(transcript, time) {
-    const scene = (transcript.scenes || []).filter((item) => item.start < time && item.end <= time + 2)
-      .sort((left, right) => right.end - left.end)[0];
+    const scenes = transcript.scenes || [];
+    const transitions = transcript.transitions || [];
+    const atVerifiedTransition = transitions.some((item) => item.continuity === "new_scene" && Math.abs(item.time - time) <= 1.2);
+    let scene = atVerifiedTransition
+      ? scenes.filter((item) => item.start < time && item.end <= time + 2).sort((left, right) => right.end - left.end)[0]
+      : null;
+    scene ||= scenes.filter((item) => item.start <= time && time <= item.end)
+      .sort((left, right) => right.start - left.start)[0];
+    scene ||= scenes.filter((item) => item.start < time).sort((left, right) => right.end - left.end)[0];
     return scene?.brand_matches || [];
   }
 

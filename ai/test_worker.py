@@ -42,6 +42,30 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual(candidates[0]["blocked_brand_matches"][0]["blocked_contexts"], ["grief"])
         self.assertIn("কথা শেষ।", candidates[0]["before_text"])
 
+    def test_break_mood_uses_active_scene_except_at_verified_transition(self):
+        scenes = [
+            {"start": 0, "end": 26, "summary": "Outdoor scene", "tone": ["curious"],
+             "sensitive_contexts": [], "brand_matches": []},
+            {"start": 26, "end": 66, "summary": "Formal meeting", "tone": ["formal", "serious"],
+             "sensitive_contexts": [], "brand_matches": []},
+        ]
+        evidence = {
+            "duration": 66, "scenes": scenes, "segments": [],
+            "silence_intervals": [{"start": 34, "end": 36, "duration": 2}],
+            "shot_boundaries": [],
+            "transitions": [{"time": 33.2, "kind": "setting_change", "continuity": "new_scene",
+                             "confidence": 0.9, "evidence": "The setting changes."}],
+        }
+        candidates = breaks.generate_candidates(evidence)
+        in_scene = next(item for item in candidates if abs(item["time"] - 35) < 0.1)
+        self.assertEqual(in_scene["preceding_scene_mood"], "formal, serious")
+        self.assertEqual(in_scene["preceding_scene_context"], "Formal meeting")
+
+        evidence["silence_intervals"] = [{"start": 32.5, "end": 33.5, "duration": 1}]
+        at_transition = breaks.generate_candidates(evidence)
+        boundary = next(item for item in at_transition if abs(item["time"] - 33) < 0.1)
+        self.assertEqual(boundary["preceding_scene_mood"], "curious")
+
     def test_break_candidate_marks_sarvam_chunk_timing_as_coarse(self):
         candidates = breaks.generate_candidates({
             "duration": 80,

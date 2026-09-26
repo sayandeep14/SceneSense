@@ -32,7 +32,7 @@ const (
 	maxUploadBytes    = 500 << 20
 	scenePromptVer    = "scene-evidence-v4-transition-probes"
 	breakPromptVer    = "break-naturalness-v2"
-	analysisVersion   = "phase4-transition-v4"
+	analysisVersion   = "phase4-transition-v5"
 )
 
 type MediaInfo struct {
