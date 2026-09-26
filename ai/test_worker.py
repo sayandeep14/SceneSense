@@ -14,18 +14,32 @@ class WorkerTests(unittest.TestCase):
     def test_break_candidates_use_actual_pause_and_scene_evidence(self):
         evidence = {
             "duration": 80,
-            "scenes": [{"start": 0, "end": 40, "summary": "The conversation ends."},
+            "scenes": [{"start": 0, "end": 40, "summary": "The conversation ends.", "tone": ["calm", "relieved"],
+                        "sensitive_contexts": [], "brand_matches": [
+                            {"brand_id": "safe", "display_name": "Safe Brand", "fit_score": 0.9,
+                             "category": "food", "reason": "Fits the meal setting.", "recommended": True,
+                             "blocked": False, "blocked_contexts": [], "matched_contexts": ["family meal"]},
+                            {"brand_id": "blocked", "display_name": "Blocked Brand", "fit_score": 0.8,
+                             "category": "beauty", "reason": "Context conflict.", "recommended": False,
+                             "blocked": True, "blocked_contexts": ["grief"], "matched_contexts": []},
+                        ]},
                        {"start": 40, "end": 80, "summary": "A quiet walk begins."}],
             "segments": [{"start": 36, "end": 39.8, "text": "কথা শেষ।"},
                          {"start": 42, "end": 50, "text": "চলো।"}],
             "silence_intervals": [{"start": 39.9, "end": 41.1, "duration": 1.2}],
             "shot_boundaries": [40.2],
+            "transitions": [{"time": 40.0, "kind": "setting_change", "continuity": "new_scene",
+                             "confidence": 0.9, "evidence": "The kitchen gives way to an outdoor lane."}],
         }
         candidates = breaks.generate_candidates(evidence)
         self.assertEqual(len(candidates), 1)
         self.assertAlmostEqual(candidates[0]["time"], 40.5)
         self.assertEqual(set(candidates[0]["signals"]),
-                         {"scene_end", "low_audio_pause", "shot_cut", "sentence_end"})
+                         {"scene_end", "scene_transition", "low_audio_pause", "shot_cut", "sentence_end"})
+        self.assertEqual(candidates[0]["transition_kind"], "setting_change")
+        self.assertEqual(candidates[0]["preceding_scene_mood"], "calm, relieved")
+        self.assertEqual(candidates[0]["brand_recommendations"][0]["display_name"], "Safe Brand")
+        self.assertEqual(candidates[0]["blocked_brand_matches"][0]["blocked_contexts"], ["grief"])
         self.assertIn("কথা শেষ।", candidates[0]["before_text"])
 
     def test_break_candidate_marks_sarvam_chunk_timing_as_coarse(self):
@@ -39,6 +53,35 @@ class WorkerTests(unittest.TestCase):
         candidate = next(item for item in candidates if abs(item["time"] - 40) < 2)
         self.assertEqual(candidate["timing_quality"], "coarse")
         self.assertIn("অনেক কথা", candidate["before_text"])
+
+    def test_transition_probe_selection_spreads_across_the_video(self):
+        selected = worker._select_transition_probe_times(list(range(1, 301)), 300)
+        self.assertLessEqual(len(selected), worker.MAX_TRANSITION_PROBES)
+        self.assertGreaterEqual(min(selected), 1)
+        self.assertGreaterEqual(max(selected), 250)
+        self.assertTrue(all(right - left >= 2.5 for left, right in zip(selected, selected[1:])))
+
+    def test_transition_probe_pair_extraction_preserves_before_after_labels(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+
+            def fake_ffmpeg(command, **_kwargs):
+                pattern = Path(command[-1])
+                pattern.parent.mkdir(parents=True, exist_ok=True)
+                pattern.parent.joinpath("transition-001.jpg").write_bytes(b"before")
+                pattern.parent.joinpath("transition-002.jpg").write_bytes(b"after")
+
+                class Result:
+                    returncode = 0
+                    stderr = "[Parsed_showinfo] n:0 pts_time:4.500\\n[Parsed_showinfo] n:1 pts_time:5.500\\n"
+
+                return Result()
+
+            with patch("worker.subprocess.run", side_effect=fake_ffmpeg) as ffmpeg:
+                frames = worker.sample_transition_frames(root / "fixture.mp4", root, 10, [5])
+        self.assertEqual([frame["side"] for frame in frames], ["before", "after"])
+        self.assertEqual([frame["probe_id"] for frame in frames], ["transition-5.000"] * 2)
+        self.assertIn("select=", ffmpeg.call_args.args[0][ffmpeg.call_args.args[0].index("-vf") + 1])
 
     def test_break_scoring_requires_all_ids_and_valid_ranges(self):
         candidates = breaks.generate_candidates({
@@ -107,7 +150,7 @@ class WorkerTests(unittest.TestCase):
 
             with patch("worker.extract_audio", side_effect=AssertionError("ASR should be reused")):
                 with patch("worker.sample_frames", return_value=[{"time": 0, "data_url": "fixture"}]):
-                    with patch("worker.analyze_scenes", return_value=evidence["scenes"]) as scene_request:
+                    with patch("worker.analyze_scenes", return_value=(evidence["scenes"], [])) as scene_request:
                         with patch("worker.score_candidates", side_effect=fake_score):
                             result = worker.run({"video_path": str(video), "work_dir": str(root),
                                                  "brands_path": str(brands), "content_hash": digest})
@@ -132,7 +175,7 @@ class WorkerTests(unittest.TestCase):
                 "silence_intervals": [{"start": 39, "end": 41, "duration": 2}],
                 "shot_boundaries": [40], "scenes": [{"scene_id": "old", "start": 0, "end": 25,
                                                    "summary": "Old chunk-boundary scene"}],
-                "scene_analysis_status": "complete", "scene_prompt_version": worker.PHASE2_SCENE_PROMPT_VERSION,
+                "scene_analysis_status": "complete", "scene_prompt_version": worker.PREVIOUS_PHASE3_SCENE_PROMPT_VERSION,
                 "content_hash": digest, "cache_key": previous_key,
             }
             worker._write_cache(root / f"analysis-{previous_key}.json", {
@@ -143,14 +186,15 @@ class WorkerTests(unittest.TestCase):
             brands = Path(__file__).resolve().parent.parent / "assets" / "brands.json"
             with patch("worker.extract_audio", side_effect=AssertionError("ASR should be reused")):
                 with patch("worker.sample_frames", return_value=[{"time": 0, "data_url": "fixture"}]):
-                    with patch("worker.analyze_scenes", return_value=improved_scenes):
-                        with patch("worker.score_candidates", side_effect=lambda candidates, model: [
-                            {**item, "naturalness": 0.9, "disruption_risk": 0.1,
-                             "confidence": 0.9, "ai_reason": "Natural scene transition.",
-                             "ai_model": model, "ai_prompt_version": breaks.BREAK_PROMPT_VERSION}
-                            for item in candidates]):
-                            result = worker.run({"video_path": str(video), "work_dir": str(root),
-                                                 "brands_path": str(brands), "content_hash": digest})
+                    with patch("worker.sample_transition_frames", return_value=[]):
+                        with patch("worker.analyze_scenes", return_value=(improved_scenes, [])):
+                            with patch("worker.score_candidates", side_effect=lambda candidates, model: [
+                                {**item, "naturalness": 0.9, "disruption_risk": 0.1,
+                                 "confidence": 0.9, "ai_reason": "Natural scene transition.",
+                                 "ai_model": model, "ai_prompt_version": breaks.BREAK_PROMPT_VERSION}
+                                for item in candidates]):
+                                result = worker.run({"video_path": str(video), "work_dir": str(root),
+                                                     "brands_path": str(brands), "content_hash": digest})
             self.assertTrue(result["evidence_cache_hit"])
             self.assertEqual(result["scenes"], improved_scenes)
             self.assertEqual(result["scene_prompt_version"], worker.SCENE_PROMPT_VERSION)
@@ -174,6 +218,36 @@ class WorkerTests(unittest.TestCase):
             catalog_path.write_text(json.dumps([brand, brand]), encoding="utf-8")
             with self.assertRaisesRegex(worker.WorkerError, "unique"):
                 worker.load_brand_catalog(catalog_path)
+
+    def test_negative_brand_contexts_block_brand_even_with_high_ai_fit(self):
+        brands = worker.load_brand_catalog(Path(__file__).resolve().parent.parent / "assets" / "brands.json")
+        scene = {
+            "scene_id": "meal", "start": 0, "end": 30, "summary": "A family shares a meal.",
+            "activities": ["eating together"], "tone": ["warm"], "sensitive_contexts": ["food"],
+            "dialogue_state": "completed_thought", "confidence": 0.9, "evidence": ["Food is visible."],
+            "brand_matches": [{"brand_id": brand["brand_id"], "fit_score": 0.95,
+                               "matched_contexts": ["family meal"], "reason": "Strong scene fit."}
+                              for brand in brands],
+        }
+        result = worker._validate_scenes({"scenes": [scene]}, 30, brands)[0]
+        by_id = {item["brand_id"]: item for item in result["brand_matches"]}
+        self.assertTrue(by_id["brand_b"]["blocked"])
+        self.assertIn("food", by_id["brand_b"]["blocked_contexts"])
+        self.assertFalse(by_id["brand_a"]["blocked"])
+        self.assertTrue(by_id["brand_a"]["recommended"])
+
+    def test_uncertain_scene_blocks_every_brand_recommendation(self):
+        brands = worker.load_brand_catalog(Path(__file__).resolve().parent.parent / "assets" / "brands.json")
+        scene = {
+            "scene_id": "unknown", "start": 0, "end": 30, "summary": "An unclear scene.",
+            "activities": [], "tone": [], "sensitive_contexts": [], "dialogue_state": "unclear",
+            "confidence": 0.4, "evidence": [],
+            "brand_matches": [{"brand_id": brand["brand_id"], "fit_score": 0.99,
+                               "matched_contexts": ["family"], "reason": "Strong scene fit."}
+                              for brand in brands],
+        }
+        result = worker._validate_scenes({"scenes": [scene]}, 30, brands)[0]
+        self.assertTrue(all(item["blocked"] and not item["recommended"] for item in result["brand_matches"]))
 
     def test_normalizes_segment_and_word_timestamps(self):
         result = worker._validate_transcript({
@@ -411,7 +485,7 @@ class WorkerTests(unittest.TestCase):
             "scene_id": "scene-01", "start": 0, "end": 9.5,
             "summary": "Two people talk indoors.", "activities": ["conversation"],
             "tone": ["calm"], "sensitive_contexts": [], "dialogue_state": "completed_thought",
-            "confidence": 0.87, "evidence": ["Two people are visible", "Dialogue transcript"],
+            "confidence": 0.87, "evidence": ["Two people are visible", "Dialogue transcript"], "brand_matches": [],
         }
 
         class FakeResponse:
@@ -423,18 +497,28 @@ class WorkerTests(unittest.TestCase):
 
             def read(self, _limit):
                 return json.dumps({"output": [{"type": "message", "content": [{
-                    "type": "output_text", "text": json.dumps({"scenes": [scene]}),
+                    "type": "output_text", "text": json.dumps({
+                        "scenes": [scene],
+                        "transitions": [{
+                            "probe_id": "transition-9.000", "kind": "setting_change",
+                            "continuity": "new_scene", "confidence": 0.9,
+                            "evidence": "The quiet garden gives way to an indoor room.",
+                        }],
+                    }),
                 }]}]}).encode()
 
-        frames = [{"time": 0.0, "data_url": "data:image/jpeg;base64,ZmFrZQ=="}]
+        frames = [{"time": 8.5, "boundary_time": 9.0, "probe_id": "transition-9.000", "side": "before",
+                   "data_url": "data:image/jpeg;base64,ZmFrZQ=="}]
         transcript = {"segments": [{"start": 0, "end": 1, "text": "নমস্কার"}]}
         with patch.dict("os.environ", {"OPENAI_API_KEY": "fake-openai-key"}):
             with patch("worker.urllib.request.urlopen", return_value=FakeResponse()) as request:
-                scenes = worker.analyze_scenes(frames, transcript, [], 10.0, [9.0])
+                scenes, transitions = worker.analyze_scenes(frames, transcript, [], 10.0, [9.0])
         self.assertEqual(scenes[0]["scene_id"], "scene-01")
         self.assertEqual(scenes[0]["end"], 9.0)
         self.assertEqual(scenes[0]["shot_boundaries"], [9.0])
         self.assertEqual(scenes[0]["sensitive_contexts"], [])
+        self.assertEqual(transitions[0]["continuity"], "new_scene")
+        self.assertAlmostEqual(transitions[0]["time"], 9.0)
         request_payload = json.loads(request.call_args.args[0].data)
         self.assertEqual(request_payload["model"], worker.SCENE_MODEL)
         self.assertFalse(request_payload["store"])

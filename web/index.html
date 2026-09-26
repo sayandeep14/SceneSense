@@ -101,9 +101,12 @@
                 <div class="timeline-empty">
                   <div class="wave-area">
                     <div class="wave-bars"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+                    <div id="all-cut-markers" class="all-cut-markers" aria-label="All detected shot cuts"></div>
+                    <div id="potential-break-markers" class="potential-break-markers" aria-label="AI potential break points"></div>
                     <div id="break-markers" class="break-markers hidden"></div>
                     <span class="wave-start">00:00</span><span class="wave-end">—:—</span>
                   </div>
+                  <div class="review-controls"><label for="review-seek">PREVIEW POSITION <output id="review-time">00:00</output></label><input id="review-seek" type="range" min="0" max="0" step="0.1" value="0" aria-label="Seek precisely through the video"><button id="add-break-marker" class="outline-button" type="button">＋ Place break at playhead</button></div>
                   <div class="timeline-caption"><span class="timeline-spark">✳</span><div><strong id="timeline-empty-title">The story comes first.</strong><p id="timeline-empty-copy">Upload a video to get its first look. Bengali speech and scene analysis are the next milestone.</p></div></div>
                 </div>
                 <section id="transcript-panel" class="transcript-panel hidden" aria-live="polite" aria-label="AI transcript">
@@ -115,12 +118,14 @@
                   <div class="scene-evidence-heading"><div><strong>Scene intelligence</strong><span id="scene-evidence-meta">Waiting for scene analysis.</span></div><span class="scene-ai-mark">AI</span></div>
                   <div id="scene-warning" class="scene-warning hidden" role="status"></div>
                   <div id="pause-evidence" class="pause-evidence hidden"><strong>Low-audio pauses</strong><div id="pause-list" class="pause-list"></div></div>
+                  <div id="transition-evidence" class="transition-evidence hidden"><strong>What changed across the cut</strong><ol id="transition-list" class="transition-list"></ol></div>
                   <ol id="scene-list" class="scene-list"></ol>
                 </section>
                 <section id="break-decisions" class="break-decisions hidden" aria-label="Break decisions">
                   <div class="break-heading"><div><strong>Safe break opportunities</strong><span id="break-meta">Waiting for policy review.</span></div><span class="break-policy-tag">AI + POLICY</span></div>
                   <div id="break-warning" class="scene-warning hidden" role="status"></div>
-                  <div class="break-legend"><span><i class="legend-dot accepted"></i> Selected</span><span><i class="legend-dot rejected"></i> Withheld</span></div>
+                  <div class="break-count-control"><label for="break-count-range"><span>How many breaks?</span><output id="break-count-value">0</output></label><input id="break-count-range" type="range" min="0" max="0" step="1" value="0"><p id="break-selection-status">AI selects the strongest safe moments. You can adjust every marker.</p></div>
+                  <div class="break-legend"><span><i class="legend-dot all-cuts"></i> All cuts</span><span><i class="legend-dot potential"></i> AI potential</span><span><i class="legend-dot accepted"></i> Selected</span><span><i class="legend-dot rejected"></i> Withheld</span></div>
                   <p id="break-empty" class="break-empty hidden"></p>
                   <ol id="break-list" class="break-list"></ol>
                 </section>

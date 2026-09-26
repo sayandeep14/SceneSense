@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -26,17 +27,39 @@ type TranscriptSegment struct {
 }
 
 type SceneEvidence struct {
-	SceneID           string    `json:"scene_id"`
-	Start             float64   `json:"start"`
-	End               float64   `json:"end"`
-	Summary           string    `json:"summary"`
-	Activities        []string  `json:"activities"`
-	Tone              []string  `json:"tone"`
-	SensitiveContexts []string  `json:"sensitive_contexts"`
-	DialogueState     string    `json:"dialogue_state"`
-	Confidence        float64   `json:"confidence"`
-	Evidence          []string  `json:"evidence"`
-	ShotBoundaries    []float64 `json:"shot_boundaries"`
+	SceneID           string            `json:"scene_id"`
+	Start             float64           `json:"start"`
+	End               float64           `json:"end"`
+	Summary           string            `json:"summary"`
+	Activities        []string          `json:"activities"`
+	Tone              []string          `json:"tone"`
+	SensitiveContexts []string          `json:"sensitive_contexts"`
+	DialogueState     string            `json:"dialogue_state"`
+	Confidence        float64           `json:"confidence"`
+	Evidence          []string          `json:"evidence"`
+	ShotBoundaries    []float64         `json:"shot_boundaries"`
+	BrandMatches      []SceneBrandMatch `json:"brand_matches"`
+}
+
+type SceneBrandMatch struct {
+	BrandID         string   `json:"brand_id"`
+	DisplayName     string   `json:"display_name"`
+	Category        string   `json:"category"`
+	FitScore        float64  `json:"fit_score"`
+	MatchedContexts []string `json:"matched_contexts"`
+	Reason          string   `json:"reason"`
+	BlockedContexts []string `json:"blocked_contexts"`
+	Blocked         bool     `json:"blocked"`
+	Recommended     bool     `json:"recommended"`
+}
+
+type TransitionEvidence struct {
+	ProbeID    string  `json:"probe_id"`
+	Time       float64 `json:"time"`
+	Kind       string  `json:"kind"`
+	Continuity string  `json:"continuity"`
+	Confidence float64 `json:"confidence"`
+	Evidence   string  `json:"evidence"`
 }
 
 type SilenceInterval struct {
@@ -46,33 +69,35 @@ type SilenceInterval struct {
 }
 
 type Transcript struct {
-	Language             string              `json:"language"`
-	Duration             float64             `json:"duration"`
-	Text                 string              `json:"text"`
-	Segments             []TranscriptSegment `json:"segments"`
-	Model                string              `json:"model"`
-	TimestampAdjustments int                 `json:"timestamp_adjustments"`
-	Scenes               []SceneEvidence     `json:"scenes"`
-	SilenceIntervals     []SilenceInterval   `json:"silence_intervals"`
-	PauseDetectionStatus string              `json:"pause_detection_status"`
-	PauseDetectionError  string              `json:"pause_detection_error,omitempty"`
-	SceneAnalysisStatus  string              `json:"scene_analysis_status"`
-	SceneModel           string              `json:"scene_model"`
-	ScenePromptVersion   string              `json:"scene_prompt_version"`
-	SceneAnalysisError   string              `json:"scene_analysis_error,omitempty"`
-	ShotBoundaries       []float64           `json:"shot_boundaries"`
-	ShotDetectionStatus  string              `json:"shot_detection_status"`
-	ShotDetectionError   string              `json:"shot_detection_error,omitempty"`
-	ContentHash          string              `json:"content_hash"`
-	CacheKey             string              `json:"cache_key"`
-	CacheHit             bool                `json:"cache_hit"`
-	EvidenceCacheHit     bool                `json:"evidence_cache_hit"`
-	BreakModel           string              `json:"break_model"`
-	BreakPromptVersion   string              `json:"break_prompt_version"`
-	BreakScoringStatus   string              `json:"break_scoring_status"`
-	BreakScoringError    string              `json:"break_scoring_error,omitempty"`
-	BreakCandidates      []BreakCandidate    `json:"break_candidates"`
-	BreakPolicy          BreakPolicyInfo     `json:"break_policy"`
+	Language             string               `json:"language"`
+	Duration             float64              `json:"duration"`
+	Text                 string               `json:"text"`
+	Segments             []TranscriptSegment  `json:"segments"`
+	Model                string               `json:"model"`
+	TimestampAdjustments int                  `json:"timestamp_adjustments"`
+	Scenes               []SceneEvidence      `json:"scenes"`
+	Transitions          []TransitionEvidence `json:"transitions"`
+	BrandCatalogVersion  string               `json:"brand_catalog_version"`
+	SilenceIntervals     []SilenceInterval    `json:"silence_intervals"`
+	PauseDetectionStatus string               `json:"pause_detection_status"`
+	PauseDetectionError  string               `json:"pause_detection_error,omitempty"`
+	SceneAnalysisStatus  string               `json:"scene_analysis_status"`
+	SceneModel           string               `json:"scene_model"`
+	ScenePromptVersion   string               `json:"scene_prompt_version"`
+	SceneAnalysisError   string               `json:"scene_analysis_error,omitempty"`
+	ShotBoundaries       []float64            `json:"shot_boundaries"`
+	ShotDetectionStatus  string               `json:"shot_detection_status"`
+	ShotDetectionError   string               `json:"shot_detection_error,omitempty"`
+	ContentHash          string               `json:"content_hash"`
+	CacheKey             string               `json:"cache_key"`
+	CacheHit             bool                 `json:"cache_hit"`
+	EvidenceCacheHit     bool                 `json:"evidence_cache_hit"`
+	BreakModel           string               `json:"break_model"`
+	BreakPromptVersion   string               `json:"break_prompt_version"`
+	BreakScoringStatus   string               `json:"break_scoring_status"`
+	BreakScoringError    string               `json:"break_scoring_error,omitempty"`
+	BreakCandidates      []BreakCandidate     `json:"break_candidates"`
+	BreakPolicy          BreakPolicyInfo      `json:"break_policy"`
 }
 
 type workerRequest struct {
@@ -146,6 +171,9 @@ func validateTranscriptGo(transcript Transcript) error {
 			}
 			previousCut = cut
 		}
+		if err := validateBrandMatches(scene.BrandMatches); err != nil {
+			return err
+		}
 		previousSceneStart = scene.Start
 	}
 	previousCut := -1.0
@@ -154,6 +182,20 @@ func validateTranscriptGo(transcript Transcript) error {
 			return errors.New("AI worker returned invalid shot-cut timestamps")
 		}
 		previousCut = cut
+	}
+	previousTransition := -1.0
+	seenProbes := make(map[string]bool, len(transcript.Transitions))
+	validTransitionKinds := map[string]bool{"camera_only": true, "setting_change": true, "activity_change": true, "time_or_story_change": true, "unclear": true}
+	validContinuities := map[string]bool{"same_scene": true, "new_scene": true, "uncertain": true}
+	for _, transition := range transcript.Transitions {
+		if transition.ProbeID == "" || seenProbes[transition.ProbeID] || transition.Time <= previousTransition ||
+			transition.Time <= 0 || transition.Time >= transcript.Duration || math.IsNaN(transition.Time) ||
+			transition.Confidence < 0 || transition.Confidence > 1 || math.IsNaN(transition.Confidence) ||
+			!validTransitionKinds[transition.Kind] || !validContinuities[transition.Continuity] || strings.TrimSpace(transition.Evidence) == "" {
+			return errors.New("AI worker returned invalid visual transition evidence")
+		}
+		seenProbes[transition.ProbeID] = true
+		previousTransition = transition.Time
 	}
 	previousPauseEnd := 0.0
 	for _, pause := range transcript.SilenceIntervals {
@@ -168,6 +210,19 @@ func validateTranscriptGo(transcript Transcript) error {
 	}
 	if err := validateBreakCandidates(transcript); err != nil {
 		return err
+	}
+	return nil
+}
+
+func validateBrandMatches(matches []SceneBrandMatch) error {
+	seen := make(map[string]bool, len(matches))
+	for _, match := range matches {
+		if match.BrandID == "" || seen[match.BrandID] || match.DisplayName == "" || match.Category == "" ||
+			match.FitScore < 0 || match.FitScore > 1 || math.IsNaN(match.FitScore) || strings.TrimSpace(match.Reason) == "" ||
+			(match.Blocked && match.Recommended) {
+			return errors.New("AI worker returned invalid or unsafe brand fit evidence")
+		}
+		seen[match.BrandID] = true
 	}
 	return nil
 }

@@ -21,6 +21,66 @@
     return hours ? `${hours}:${String(minutes).padStart(2, "0")}:${String(remainder).padStart(2, "0")}` : `${minutes}:${String(remainder).padStart(2, "0")}`;
   };
 
+  function loadBreakSelection(jobId, candidates, maxCount, duration, policy) {
+    const key = `scenesense-break-selection:${jobId}`;
+    let state;
+    try { state = JSON.parse(localStorage.getItem(key) || "null"); } catch { state = null; }
+    if (!state || !Array.isArray(state.selected)) {
+      state = {
+        target: Math.min(maxCount, candidates.filter((candidate) => candidate.decision === "accepted").length),
+        selected: candidates.filter((candidate) => candidate.decision === "accepted")
+          .map((candidate) => ({ time: candidate.time, source: "ai", candidateId: candidate.candidate_id })),
+        excludedAI: [],
+      };
+    }
+    if (!Array.isArray(state.excludedAI)) state.excludedAI = [];
+    const cleaned = [];
+    for (const item of [...state.selected].sort((left, right) => left.time - right.time)) {
+      if (!Number.isFinite(item.time) || item.time < 15 || item.time > duration - 10 ||
+          (item.source !== "manual" && !candidates.some((candidate) => candidate.candidate_id === item.candidateId &&
+            (candidate.potential || candidate.decision === "accepted")))) continue;
+      if (cleaned.length >= maxCount || cleaned.some((prior) => Math.abs(prior.time - item.time) < policy.min_gap_seconds)) continue;
+      cleaned.push({ ...item, source: item.source === "manual" ? "manual" : "ai" });
+    }
+    state.selected = cleaned;
+    state.target = Math.min(maxCount, Math.max(state.selected.length, Number(state.target) || 0));
+    return { key, state };
+  }
+
+  function saveBreakSelection(key, state) {
+    try { localStorage.setItem(key, JSON.stringify(state)); } catch { /* This session remains editable without storage. */ }
+  }
+
+  function selectBestAIBreaks(state, candidates, target, minimumGap) {
+    const selected = state.selected.filter((item) => item.source === "manual");
+    const eligible = candidates.filter((candidate) => (candidate.potential ||
+      (candidate.potential === undefined && candidate.decision === "accepted")) &&
+      !state.excludedAI.includes(candidate.candidate_id));
+    eligible.sort((left, right) => (right.naturalness - right.disruption_risk) -
+      (left.naturalness - left.disruption_risk) || right.confidence - left.confidence || left.time - right.time);
+    for (const candidate of eligible) {
+      if (selected.length >= target) break;
+      if (selected.some((item) => Math.abs(item.time - candidate.time) < minimumGap)) continue;
+      selected.push({ time: candidate.time, source: "ai", candidateId: candidate.candidate_id });
+    }
+    state.selected = selected.sort((left, right) => left.time - right.time);
+  }
+
+  function placementLimitMessage(state, time, duration, policy, maxCount) {
+    if (!Number.isFinite(time) || time < 15 || time > duration - 10) return "Leave at least 15 seconds at the start and 10 seconds at the end.";
+    if (state.selected.length >= maxCount) return `This video allows at most ${maxCount} breaks.`;
+    if (state.selected.some((item) => Math.abs(item.time - time) < policy.min_gap_seconds)) return `Keep at least ${policy.min_gap_seconds} seconds between ads.`;
+    const count = state.selected.length + 1;
+    if (count * policy.planned_ad_seconds / (duration + count * policy.planned_ad_seconds) > policy.max_ad_load_percent / 100) return "This would exceed the ad-load limit.";
+    return "";
+  }
+
+  function precedingSceneBrandMatches(transcript, time) {
+    const scene = (transcript.scenes || []).filter((item) => item.start < time && item.end <= time + 2)
+      .sort((left, right) => right.end - left.end)[0];
+    return scene?.brand_matches || [];
+  }
+
   const humanSize = (bytes) => {
     if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
     return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
@@ -149,19 +209,25 @@
     const sceneList = document.querySelector("#scene-list");
     const pausePanel = document.querySelector("#pause-evidence");
     const pauseList = document.querySelector("#pause-list");
+    const transitionPanel = document.querySelector("#transition-evidence");
+    const transitionList = document.querySelector("#transition-list");
     const transcript = job.transcript;
     panel.classList.toggle("hidden", !transcript);
     sceneList.replaceChildren();
     pauseList.replaceChildren();
+    transitionList.replaceChildren();
     warning.classList.add("hidden");
     pausePanel.classList.add("hidden");
+    transitionPanel.classList.add("hidden");
     if (!transcript) return;
 
     const scenes = transcript.scenes || [];
     const pauses = transcript.silence_intervals || [];
+    const transitions = transcript.transitions || [];
     const shotBoundaries = transcript.shot_boundaries || [];
-    meta.textContent = `${scenes.length} scenes · ${shotBoundaries.length} shot cuts · ${pauses.length} low-audio pauses · ${transcript.scene_model || "scene model pending"} · ${transcript.scene_prompt_version || ""}${transcript.cache_hit ? " · cached" : ""}`;
-    const issues = [transcript.pause_detection_error, transcript.shot_detection_error, transcript.scene_analysis_error].filter(Boolean);
+    meta.textContent = `${scenes.length} scenes · ${transitions.length} cut contexts checked · ${shotBoundaries.length} shot cuts · ${pauses.length} low-audio pauses · ${transcript.scene_model || "scene model pending"} · catalogue ${transcript.brand_catalog_version || "legacy"} · ${transcript.scene_prompt_version || ""}${transcript.cache_hit ? " · cached" : ""}`;
+    const issues = [transcript.pause_detection_error, transcript.shot_detection_error,
+      transcript.transition_probe_error, transcript.scene_analysis_error].filter(Boolean);
     if (issues.length) {
       warning.textContent = issues.join(" ");
       warning.classList.remove("hidden");
@@ -187,6 +253,38 @@
         more.className = "pause-more";
         more.textContent = `+${pauses.length - 24} more`;
         pauseList.append(more);
+      }
+    }
+
+    if (transitions.length) {
+      transitionPanel.classList.remove("hidden");
+      for (const transition of transitions) {
+        const item = document.createElement("li");
+        const time = document.createElement("button");
+        time.type = "button";
+        time.className = "scene-time";
+        time.textContent = formatDuration(transition.time);
+        time.setAttribute("aria-label", `Play visual transition at ${formatDuration(transition.time)}`);
+        time.addEventListener("click", () => {
+          const video = document.querySelector("#video-preview");
+          video.currentTime = transition.time;
+          video.play().catch(() => {});
+        });
+        const label = document.createElement("span");
+        label.className = `transition-label transition-${transition.continuity}`;
+        label.textContent = transition.continuity === "same_scene"
+          ? "same scene · camera change"
+          : transition.continuity === "new_scene"
+            ? `new scene · ${transition.kind.replaceAll("_", " ")}`
+            : "uncertain transition";
+        const confidence = document.createElement("span");
+        confidence.className = "transition-confidence";
+        confidence.textContent = `${Math.round(transition.confidence * 100)}%`;
+        const evidence = document.createElement("p");
+        evidence.className = "transition-reason";
+        evidence.textContent = transition.evidence;
+        item.append(time, label, confidence, evidence);
+        transitionList.append(item);
       }
     }
 
@@ -250,82 +348,238 @@
   }
 
   function renderBreakDecisions(job) {
-    const panel = document.querySelector("#break-decisions");
-    const markers = document.querySelector("#break-markers");
-    const list = document.querySelector("#break-list");
-    const meta = document.querySelector("#break-meta");
-    const warning = document.querySelector("#break-warning");
-    const empty = document.querySelector("#break-empty");
     const transcript = job.transcript;
+    const panel = document.querySelector("#break-decisions");
+    const cutsLayer = document.querySelector("#all-cut-markers");
+    const potentialLayer = document.querySelector("#potential-break-markers");
+    const selectedLayer = document.querySelector("#break-markers");
+    const list = document.querySelector("#break-list");
+    const empty = document.querySelector("#break-empty");
+    const warning = document.querySelector("#break-warning");
+    const countRange = document.querySelector("#break-count-range");
+    const countValue = document.querySelector("#break-count-value");
+    const status = document.querySelector("#break-selection-status");
+    const video = document.querySelector("#video-preview");
+    const candidates = transcript?.break_candidates || [];
+    const policy = transcript?.break_policy;
     panel.classList.toggle("hidden", !transcript);
-    markers.classList.toggle("hidden", !transcript?.break_candidates?.length);
-    markers.replaceChildren();
+    selectedLayer.classList.toggle("hidden", !transcript);
+    cutsLayer.replaceChildren();
+    potentialLayer.replaceChildren();
+    selectedLayer.replaceChildren();
     list.replaceChildren();
-    warning.classList.add("hidden");
     empty.classList.add("hidden");
+    warning.classList.add("hidden");
     if (!transcript) return;
-
-    const candidates = transcript.break_candidates || [];
-    const policy = transcript.break_policy;
     if (!policy?.version) {
-      meta.textContent = "This saved analysis predates break scoring.";
-      empty.textContent = "Use “Re-run with current AI” above to review safe break opportunities.";
+      empty.textContent = "This saved analysis predates break selection. Re-run it with current AI to edit markers.";
       empty.classList.remove("hidden");
       return;
     }
-    meta.textContent = `${policy.accepted_count} selected · ${candidates.length - policy.accepted_count} withheld · ${policy.version} · ${policy.min_gap_seconds}s minimum gap · ${policy.max_ad_load_percent}% ad-load cap for ${policy.planned_ad_seconds}s test spots`;
+
+    const duration = Number(transcript.duration) || 0;
+    const maxByLoad = Math.floor((policy.max_ad_load_percent / 100) * duration /
+      ((1 - policy.max_ad_load_percent / 100) * policy.planned_ad_seconds));
+    const maxByGap = Math.max(0, Math.floor(Math.max(0, duration - 25) / policy.min_gap_seconds) + 1);
+    const maxCount = Math.max(0, Math.min(policy.max_break_count || Math.ceil(duration / 1800 * 4), maxByLoad, maxByGap));
+    const potentials = candidates.filter((item) => item.potential ||
+      (item.potential === undefined && item.decision === "accepted"));
+    const { key, state } = loadBreakSelection(job.id, candidates, maxCount, duration, policy);
+    const persist = () => saveBreakSelection(key, state);
+    const seek = document.querySelector("#review-seek");
+    seek.max = String(duration);
+    seek.value = String(video.currentTime || 0);
+    document.querySelector("#review-time").value = formatDuration(video.currentTime || 0);
+    seek.oninput = () => { video.currentTime = Number(seek.value); };
+
+    for (const cut of transcript.shot_boundaries || []) {
+      const marker = document.createElement("button");
+      marker.type = "button";
+      marker.className = "cut-marker";
+      marker.style.left = `${Math.max(0.4, Math.min(99.6, cut / duration * 100))}%`;
+      marker.title = `Shot cut ${formatDuration(cut)} · click to review`;
+      marker.setAttribute("aria-label", marker.title);
+      marker.onclick = () => { video.currentTime = cut; };
+      cutsLayer.append(marker);
+    }
+
+    const isSelected = (candidate) => state.selected.some((item) =>
+      item.candidateId === candidate.candidate_id || Math.abs(item.time - candidate.time) < 0.05);
+    for (const candidate of potentials) {
+      const marker = document.createElement("button");
+      marker.type = "button";
+      marker.className = `potential-marker${isSelected(candidate) ? " potential-marker-selected" : ""}`;
+      marker.style.left = `${Math.max(0.6, Math.min(99.4, candidate.time / duration * 100))}%`;
+      marker.title = `${isSelected(candidate) ? "Selected" : "AI potential"} ${formatDuration(candidate.time)} · ${Math.round(candidate.confidence * 100)}% confidence`;
+      marker.setAttribute("aria-label", marker.title);
+      marker.onclick = () => {
+        const index = state.selected.findIndex((item) => item.candidateId === candidate.candidate_id || Math.abs(item.time - candidate.time) < 0.05);
+        if (index >= 0) {
+          if (!state.excludedAI.includes(candidate.candidate_id)) state.excludedAI.push(candidate.candidate_id);
+          state.selected.splice(index, 1);
+          selectBestAIBreaks(state, candidates, state.target, policy.min_gap_seconds);
+        } else {
+          state.excludedAI = state.excludedAI.filter((id) => id !== candidate.candidate_id);
+          const issue = placementLimitMessage(state, candidate.time, duration, policy, maxCount);
+          if (issue) { showToast(issue); return; }
+          state.selected.push({ time: candidate.time, source: "manual", candidateId: candidate.candidate_id });
+          state.target = Math.max(state.target, state.selected.length);
+          selectBestAIBreaks(state, candidates, state.target, policy.min_gap_seconds);
+        }
+        persist();
+        renderBreakDecisions(job);
+      };
+      potentialLayer.append(marker);
+    }
+
+    const manualCount = state.selected.filter((item) => item.source === "manual").length;
+    countRange.min = String(manualCount);
+    countRange.max = String(maxCount);
+    countRange.value = String(state.target);
+    countValue.value = String(state.target);
+    countRange.oninput = () => {
+      state.target = Number(countRange.value);
+      selectBestAIBreaks(state, candidates, state.target, policy.min_gap_seconds);
+      persist();
+      renderBreakDecisions(job);
+    };
+    const selectedAI = state.selected.filter((item) => item.source === "ai").length;
+    status.textContent = state.selected.length < state.target
+      ? `Only ${selectedAI} AI-safe point${selectedAI === 1 ? "" : "s"} found. Add ${state.target - state.selected.length} manual marker${state.target - state.selected.length === 1 ? "" : "s"} to reach ${state.target}.`
+      : `${state.selected.length} of ${maxCount} allowed · ${manualCount} manual · ${policy.min_gap_seconds}s minimum spacing. Saved in this browser.`;
+    document.querySelector("#break-meta").textContent = `${(transcript.shot_boundaries || []).length} cuts · ${potentials.length} AI potential · ${state.selected.length} selected · maximum ${maxCount}`;
     if (transcript.break_scoring_error) {
       warning.textContent = transcript.break_scoring_error;
       warning.classList.remove("hidden");
     }
-    if (!candidates.length) {
-      empty.textContent = "No reliable pause or scene boundary was found for a break. The safe decision is to keep playing the programme.";
+    if (!candidates.length && !state.selected.length) {
+      empty.textContent = "AI found no safe ad point. Review the video with the precise slider and place a marker if you find a suitable moment.";
       empty.classList.remove("hidden");
-      return;
     }
-    for (const candidate of candidates) {
-      const accepted = candidate.decision === "accepted";
-      const seekTo = () => {
-        const video = document.querySelector("#video-preview");
-        video.currentTime = candidate.time;
-        video.play().catch(() => {});
-      };
+
+    const addMarker = document.querySelector("#add-break-marker");
+    addMarker.onclick = () => {
+      const time = Number(video.currentTime);
+      const issue = placementLimitMessage(state, time, duration, policy, maxCount);
+      if (issue) { showToast(issue); return; }
+      const nearby = potentials.find((candidate) => Math.abs(candidate.time - time) < 0.5);
+      state.selected.push({ time, source: "manual", ...(nearby ? { candidateId: nearby.candidate_id } : {}) });
+      state.selected.sort((left, right) => left.time - right.time);
+      state.target = Math.max(state.target, state.selected.length);
+      selectBestAIBreaks(state, candidates, state.target, policy.min_gap_seconds);
+      persist();
+      renderBreakDecisions(job);
+    };
+
+    for (const item of state.selected) {
       const marker = document.createElement("button");
       marker.type = "button";
-      marker.className = `break-marker ${accepted ? "break-marker-accepted" : "break-marker-rejected"}`;
-      marker.style.left = `${Math.max(1, Math.min(99, candidate.time / transcript.duration * 100))}%`;
-      marker.title = `${accepted ? "Selected" : "Withheld"} break at ${formatDuration(candidate.time)}`;
+      marker.className = `break-marker break-marker-accepted${item.source === "manual" ? " break-marker-manual" : ""}`;
+      marker.style.left = `${Math.max(0.8, Math.min(99.2, item.time / duration * 100))}%`;
+      marker.title = `${item.source === "manual" ? "Manual" : "AI selected"} ad marker at ${formatDuration(item.time)}`;
       marker.setAttribute("aria-label", marker.title);
-      marker.addEventListener("click", seekTo);
-      markers.append(marker);
+      marker.onclick = () => { video.currentTime = item.time; };
+      selectedLayer.append(marker);
+    }
 
+    for (const candidate of candidates) {
+      const selected = isSelected(candidate);
       const card = document.createElement("li");
-      card.className = `break-card ${accepted ? "break-card-accepted" : "break-card-rejected"}`;
+      card.className = `break-card ${selected ? "break-card-accepted" : candidate.potential ? "break-card-potential" : "break-card-rejected"}`;
       const header = document.createElement("div");
       header.className = "break-card-header";
       const time = document.createElement("button");
       time.type = "button";
       time.className = "break-time";
       time.textContent = formatDuration(candidate.time);
-      time.setAttribute("aria-label", `Play candidate at ${formatDuration(candidate.time)}`);
-      time.addEventListener("click", seekTo);
+      time.onclick = () => { video.currentTime = candidate.time; };
       const verdict = document.createElement("span");
-      verdict.className = `break-verdict ${accepted ? "break-verdict-accepted" : "break-verdict-rejected"}`;
-      verdict.textContent = accepted ? "SELECTED" : "WITHHELD";
+      verdict.className = `break-verdict ${selected ? "break-verdict-accepted" : candidate.potential ? "break-verdict-potential" : "break-verdict-rejected"}`;
+      verdict.textContent = selected ? "SELECTED" : candidate.potential ? "AI POTENTIAL" : "WITHHELD";
       header.append(time, verdict);
       const score = document.createElement("p");
       score.className = "break-score";
-      score.textContent = transcript.break_scoring_status === "complete" ? `AI naturalness ${Math.round(candidate.naturalness * 100)}% · disruption ${Math.round(candidate.disruption_risk * 100)}% · confidence ${Math.round(candidate.confidence * 100)}%` : "AI score unavailable";
+      score.textContent = `Break naturalness ${Math.round(candidate.naturalness * 100)}% · disruption ${Math.round(candidate.disruption_risk * 100)}% · confidence ${Math.round(candidate.confidence * 100)}%`;
+      const mood = document.createElement("p");
+      mood.className = "break-signals";
+      mood.textContent = `Preceding mood: ${candidate.preceding_scene_mood || "unclear"}${candidate.preceding_sensitive_contexts?.length ? ` · caution: ${candidate.preceding_sensitive_contexts.join(", ")}` : ""}`;
+      const brandFit = document.createElement("p");
+      brandFit.className = "break-brand-fit";
+      const bestBrand = candidate.brand_recommendations?.[0];
+      brandFit.textContent = bestBrand
+        ? `Best contextual brand fit: ${bestBrand.display_name} · ${Math.round(bestBrand.fit_score * 100)}% · ${bestBrand.reason}`
+        : "No safe brand fit was identified for the preceding scene.";
+      if (candidate.blocked_brand_matches?.length) {
+        const blocked = document.createElement("span");
+        blocked.className = "break-brand-blocks";
+        blocked.textContent = `Blocked by context: ${candidate.blocked_brand_matches.map((item) => `${item.display_name} (${item.blocked_contexts.join(", ")})`).join(" · ")}`;
+        brandFit.append(document.createElement("br"), blocked);
+      }
       const rationale = document.createElement("p");
       rationale.className = "break-rationale";
       rationale.textContent = candidate.ai_reason || candidate.scene_context || "Candidate from media evidence.";
       const signals = document.createElement("p");
       signals.className = "break-signals";
-      signals.textContent = `Evidence: ${(candidate.signals || []).map((signal) => signal.replaceAll("_", " ")).join(" · ")}`;
-      const policyText = document.createElement("p");
-      policyText.className = "break-policy-reason";
-      policyText.textContent = accepted ? "Passed scene, speech, pause and pacing checks." : (candidate.reasons || []).map((reason) => reason.message).join(" ");
-      card.append(header, score, rationale, signals, policyText);
+      signals.textContent = `Evidence: ${(candidate.signals || []).map((value) => value.replaceAll("_", " ")).join(" · ")}`;
+      const reasons = document.createElement("p");
+      reasons.className = "break-policy-reason";
+      reasons.textContent = selected && state.selected.some((item) => item.source === "manual" && item.candidateId === candidate.candidate_id)
+        ? "Human selected this time. Review the scene mood and story before playback."
+        : candidate.potential ? (candidate.transition_evidence || "Passed AI scene, speech, pause, and confidence checks; spacing limits still apply.")
+          : (candidate.reasons || []).map((reason) => reason.message).join(" ");
+      card.append(header, score, mood, brandFit, rationale, signals, reasons);
+      if (selected) {
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.className = "remove-break-marker";
+        remove.textContent = "Remove marker";
+        remove.onclick = () => {
+          if (!state.excludedAI.includes(candidate.candidate_id)) state.excludedAI.push(candidate.candidate_id);
+          state.selected = state.selected.filter((item) => item.candidateId !== candidate.candidate_id && Math.abs(item.time - candidate.time) >= 0.05);
+          selectBestAIBreaks(state, candidates, state.target, policy.min_gap_seconds);
+          persist();
+          renderBreakDecisions(job);
+        };
+        card.append(remove);
+      }
+      list.append(card);
+    }
+    for (const item of state.selected.filter((selection) => !candidates.some((candidate) =>
+      candidate.candidate_id === selection.candidateId || Math.abs(candidate.time - selection.time) < 0.5))) {
+      const card = document.createElement("li");
+      card.className = "break-card break-card-accepted";
+      const header = document.createElement("div");
+      header.className = "break-card-header";
+      const time = document.createElement("button");
+      time.type = "button";
+      time.className = "break-time";
+      time.textContent = formatDuration(item.time);
+      time.onclick = () => { video.currentTime = item.time; };
+      const verdict = document.createElement("span");
+      verdict.className = "break-verdict break-verdict-accepted";
+      verdict.textContent = "MANUAL MARKER";
+      header.append(time, verdict);
+      const note = document.createElement("p");
+      note.className = "break-policy-reason";
+      note.textContent = "Placed outside the AI potential list. Check preceding-scene mood, dialogue, and sensitive context.";
+      const sceneMatches = precedingSceneBrandMatches(transcript, item.time);
+      const safeMatch = sceneMatches.find((match) => match.recommended && !match.blocked);
+      const brandFit = document.createElement("p");
+      brandFit.className = "break-brand-fit";
+      brandFit.textContent = safeMatch
+        ? `Preceding-scene brand fit: ${safeMatch.display_name} · ${Math.round(safeMatch.fit_score * 100)}% · ${safeMatch.reason}`
+        : "No safe brand fit for the preceding scene; choose a brand manually or leave the break unfilled.";
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "remove-break-marker";
+      remove.textContent = "Remove marker";
+      remove.onclick = () => {
+        state.selected = state.selected.filter((selection) => selection !== item);
+        selectBestAIBreaks(state, candidates, state.target, policy.min_gap_seconds);
+        persist();
+        renderBreakDecisions(job);
+      };
+      card.append(header, note, brandFit, remove);
       list.append(card);
     }
   }
@@ -487,6 +741,17 @@
     });
   }
   dropzone.addEventListener("drop", (event) => uploadFile(event.dataTransfer?.files?.[0]));
+
+  const previewVideo = document.querySelector("#video-preview");
+  const reviewSeek = document.querySelector("#review-seek");
+  const reviewTime = document.querySelector("#review-time");
+  previewVideo.addEventListener("timeupdate", () => {
+    reviewSeek.value = String(previewVideo.currentTime || 0);
+    reviewTime.value = formatDuration(previewVideo.currentTime || 0);
+  });
+  previewVideo.addEventListener("loadedmetadata", () => {
+    reviewSeek.max = String(previewVideo.duration || 0);
+  });
 
   fetch("/api/jobs").then((response) => response.json()).then(({ jobs = [] }) => {
     jobs.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)).forEach((job) => {

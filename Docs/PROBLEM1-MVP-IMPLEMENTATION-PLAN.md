@@ -292,11 +292,12 @@ The UI shows a timeline containing accepted breaks, rejected candidates, scores,
 
 **Build**
 
-- Add a schema-driven synthetic brand catalogue with at least eight brands.
-- Include positive contexts, hard negative contexts, creative metadata, and ad files.
-- Apply negative-context filters before AI ranking.
-- Use AI/embeddings to rank eligible brands by scene activity, tone, and context.
-- Add held-out brand loading from catalogue data with no code change.
+- Treat visual shot cuts as evidence to inspect, not automatic scene boundaries. Sample paired frames before/after a bounded, time-spread set of cuts and classify camera-only changes versus setting, activity, or story changes with the existing vision model. Keep sparse full-programme frames so dissolves and transitions without a hard cut can still inform semantic scene segmentation.
+- Store scene mood, activities, sensitive context, transition type, confidence, and reviewer-facing evidence. Use the preceding scene's mood when scoring interruption quality and contextual brand fit.
+- Use the existing synthetic catalogue (`assets/brands.json`) for AI brand ranking by scene, tone, and positive contexts. Apply a deterministic context taxonomy to block catalogue negative contexts even when the model gives a high fit score. Never recommend a brand for an uncertain scene.
+- Keep missing creative files explicit: the supplied asset tree currently contains catalogue metadata only. Brand fit can be reviewed now; ad playback must wait until valid creative files exist.
+- Show three timeline layers: all detected shot cuts (`n`), AI-qualified safe/contextual opportunities (`m`), and the chosen ad markers (`k`). Let the reviewer set `k`, review by an accessible precise seek slider, toggle AI suggestions, add/remove markers at any playhead time, and save edits in the browser for that job.
+- Bound `k` by four breaks per 30 minutes, a five-minute minimum gap, programme edge guards, and the planned ad-load cap. If the reviewer asks for more markers than AI found, allow explicit manual placements within those mechanical limits and label them for human review.
 
 **Tests**
 
@@ -306,20 +307,26 @@ The UI shows a timeline containing accepted breaks, rejected candidates, scores,
 - Unknown brand added through data only
 - Empty eligible-brand set produces “no ad selected,” not a forced match
 - Brand selection is reproducible with a fixed model/policy version
+- A reverse-angle camera cut remains in the same scene; a setting/activity change is surfaced as a distinct transition
+- Mood from the preceding scene is present in the break and brand explanation
+- Four markers can be selected in a 30-minute fixture; a fifth is rejected
+- Near-duplicate placements and placements less than five minutes apart are blocked
+- Reviewer can seek, select/deselect AI markers, add a marker outside the AI list, remove it, and reload the saved job without losing edits
 - No real company names are present in synthetic data
 
 **Evaluation gate**
 
-Zero negative-context violations in the hard-negative suite. The held-out ninth brand must be matched or safely rejected without changing application code.
+Zero negative-context brand recommendations in the hard-negative suite. The held-out ninth brand must be matched or safely rejected without changing application code. Human-authored placement edits remain within count, spacing, edge, and ad-load limits.
 
 **Deployment**
 
-- Deploy catalogue version with a visible version ID.
-- Verify that staging can load a new brand record without rebuilding the application.
+- Deploy the scene/brand evidence version with visible model and prompt provenance.
+- Verify that the browser can add a human marker and restore it when reopening the same job.
+- Verify the VLM call reuses the ASR cache instead of retranscribing.
 
 **E2E gate**
 
-For one uploaded video, the UI can show why a brand was selected and why at least one other brand was blocked.
+For one uploaded video, the UI shows all shot cuts, distinguishes camera-only cuts from scene changes, explains preceding-scene mood, shows a safe brand fit and a context-blocked brand, lets the reviewer choose `k` within limits, and supports precise manual edits outside AI suggestions.
 
 ### Phase 5 — VMAP, playback, and ad-resume path
 

@@ -107,14 +107,15 @@ func TestBreakPolicyFailsClosedOnContextAndMissingEvidence(t *testing.T) {
 }
 
 func TestBreakPolicyAppliesGapCountAndAdLoadDeterministically(t *testing.T) {
-	transcript := policyFixture(1000, 60, 90, 400, 800)
+	transcript := policyFixture(1800, 60, 90, 400, 800, 1200, 1600)
 	transcript.BreakCandidates[1].Naturalness = 0.95
 	applyBreakPolicy(&transcript)
 	if transcript.BreakCandidates[1].Decision != "accepted" || !hasReason(transcript.BreakCandidates[0], "minimum_gap") {
 		t.Fatalf("nearest lower-ranked candidate should lose: %+v", transcript.BreakCandidates)
 	}
-	if transcript.BreakPolicy.AcceptedCount != 2 || !hasReason(transcript.BreakCandidates[3], "max_break_count") {
-		t.Fatalf("hourly count was not enforced: %+v", transcript.BreakCandidates)
+	if transcript.BreakPolicy.MaxBreakCount != 4 || transcript.BreakPolicy.AcceptedCount != 4 ||
+		!hasReason(transcript.BreakCandidates[5], "max_break_count") {
+		t.Fatalf("30-minute count cap was not enforced: %+v", transcript.BreakCandidates)
 	}
 	first := append([]BreakCandidate(nil), transcript.BreakCandidates...)
 	applyBreakPolicy(&transcript)
@@ -126,6 +127,38 @@ func TestBreakPolicyAppliesGapCountAndAdLoadDeterministically(t *testing.T) {
 	applyBreakPolicy(&short)
 	if !hasReason(short.BreakCandidates[0], "ad_load") {
 		t.Fatalf("ad load was not enforced: %+v", short.BreakCandidates[0])
+	}
+}
+
+func TestSemanticSceneTransitionCanQualifyButCameraCutCannot(t *testing.T) {
+	transcript := policyFixture(80, 40)
+	transcript.Scenes = []SceneEvidence{
+		{SceneID: "one", Start: 0, End: 40, Summary: "A conversation ends", DialogueState: "completed_thought", Confidence: 0.9},
+		{SceneID: "two", Start: 40, End: 80, Summary: "A new place", DialogueState: "completed_thought", Confidence: 0.9},
+	}
+	transcript.BreakCandidates[0].Signals = []string{"low_audio_pause", "scene_transition"}
+	transcript.Transitions = []TransitionEvidence{{ProbeID: "transition-40.000", Time: 40, Kind: "setting_change",
+		Continuity: "new_scene", Confidence: 0.9, Evidence: "The setting changes."}}
+	transcript.Segments = []TranscriptSegment{{Text: "কথা শেষ।", Start: 20, End: 60}}
+	applyBreakPolicy(&transcript)
+	if transcript.BreakCandidates[0].Decision != "accepted" {
+		t.Fatalf("verified scene transition was rejected: %+v", transcript.BreakCandidates[0])
+	}
+	transcript.Transitions[0].Continuity = "same_scene"
+	applyBreakPolicy(&transcript)
+	if !hasReason(transcript.BreakCandidates[0], "coarse_asr_timing") {
+		t.Fatalf("camera-only cut incorrectly qualified as a scene boundary: %+v", transcript.BreakCandidates[0])
+	}
+}
+
+func TestBreakCandidateCannotRecommendBlockedBrand(t *testing.T) {
+	transcript := policyFixture(80, 40)
+	transcript.BreakCandidates[0].BrandRecommendations = []SceneBrandMatch{{
+		BrandID: "food", DisplayName: "Food Brand", Category: "food", FitScore: 0.95,
+		Reason: "Strong fit", Blocked: true, BlockedContexts: []string{"medical"}, Recommended: true,
+	}}
+	if err := validateBreakCandidates(transcript); err == nil {
+		t.Fatal("a brand with a hard negative context was recommended")
 	}
 }
 

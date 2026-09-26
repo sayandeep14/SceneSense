@@ -23,17 +23,33 @@ func TestAnalysisCacheKeyIncludesConfiguredPipelineVersions(t *testing.T) {
 	t.Setenv("SARVAM_ASR_MODEL", "")
 	t.Setenv("OPENAI_VISION_MODEL", "gpt-4o-mini")
 	t.Setenv("OPENAI_BREAK_MODEL", "")
+	t.Setenv("AI_BRANDS_PATH", filepath.Join("assets", "brands.json"))
+	brandCatalogBytes, err := os.ReadFile(filepath.Join("assets", "brands.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	brandCatalogSum := sha256.Sum256(brandCatalogBytes)
+	brandCatalogHash := hex.EncodeToString(brandCatalogSum[:])
 	contentHash := "fixture-content-hash"
 	parts := strings.Join([]string{
-		contentHash, "groq", "whisper-large-v3-turbo", "gpt-4o-mini", "scene-evidence-v3",
-		"gpt-4o-mini", "break-naturalness-v2", "phase3-break-v3",
-		"16", "0.3", "300", "silencedetect:-32dB:0.45s",
+		contentHash, "groq", "whisper-large-v3-turbo", "gpt-4o-mini", "scene-evidence-v4-transition-probes",
+		"gpt-4o-mini", "break-naturalness-v2", "phase4-transition-v4",
+		"16", "0.3", "300", "silencedetect:-32dB:0.45s", brandCatalogHash,
 	}, "|")
 	expected := sha256.Sum256([]byte(parts))
 	first := currentAnalysisCacheKey(contentHash)
 	if first != hex.EncodeToString(expected[:]) || first != currentAnalysisCacheKey(contentHash) {
 		t.Fatalf("cache key = %q; expected stable key %q", first, hex.EncodeToString(expected[:]))
 	}
+	changedCatalog := filepath.Join(t.TempDir(), "brands.json")
+	if err := os.WriteFile(changedCatalog, append(brandCatalogBytes, ' '), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("AI_BRANDS_PATH", changedCatalog)
+	if currentAnalysisCacheKey(contentHash) == first {
+		t.Fatal("cache key did not change after the brand catalogue changed")
+	}
+	t.Setenv("AI_BRANDS_PATH", filepath.Join("assets", "brands.json"))
 	t.Setenv("OPENAI_VISION_MODEL", "different-model")
 	if currentAnalysisCacheKey(contentHash) == first {
 		t.Fatal("cache key did not change after the vision model changed")
@@ -46,9 +62,9 @@ func TestAnalysisCacheKeyIncludesConfiguredPipelineVersions(t *testing.T) {
 		t.Fatal("cache key did not change after the ASR provider changed")
 	}
 	parts = strings.Join([]string{
-		contentHash, "sarvam", "saaras:v4", "gpt-4o-mini", "scene-evidence-v3",
-		"gpt-4o-mini", "break-naturalness-v2", "phase3-break-v3",
-		"16", "0.3", "300", "silencedetect:-32dB:0.45s",
+		contentHash, "sarvam", "saaras:v4", "gpt-4o-mini", "scene-evidence-v4-transition-probes",
+		"gpt-4o-mini", "break-naturalness-v2", "phase4-transition-v4",
+		"16", "0.3", "300", "silencedetect:-32dB:0.45s", brandCatalogHash,
 	}, "|")
 	expected = sha256.Sum256([]byte(parts))
 	if sarvamKey != hex.EncodeToString(expected[:]) {

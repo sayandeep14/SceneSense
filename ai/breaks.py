@@ -41,6 +41,7 @@ def generate_candidates(evidence: dict[str, Any]) -> list[dict[str, Any]]:
     segments = evidence.get("segments", [])
     pauses = evidence.get("silence_intervals", [])
     cuts = evidence.get("shot_boundaries", [])
+    transitions = evidence.get("transitions", [])
     events: list[tuple[float, str]] = []
 
     def add(time: float, signal: str) -> None:
@@ -49,6 +50,10 @@ def generate_candidates(evidence: dict[str, Any]) -> list[dict[str, Any]]:
 
     for scene in scenes:
         add(float(scene["end"]), "scene_end")
+    for transition in transitions:
+        if (transition.get("continuity") == "new_scene"
+                and float(transition.get("confidence", 0)) >= 0.65):
+            add(float(transition["time"]), "scene_transition")
     for pause in pauses:
         if float(pause["duration"]) >= 0.45:
             add((float(pause["start"]) + float(pause["end"])) / 2, "low_audio_pause")
@@ -63,7 +68,8 @@ def generate_candidates(evidence: dict[str, Any]) -> list[dict[str, Any]]:
                 add(end, "sentence_end")
 
     # A pause midpoint is the safest anchor when nearby evidence clusters.
-    priority = {"low_audio_pause": 0, "scene_end": 1, "sentence_end": 2, "shot_cut": 3}
+    priority = {"low_audio_pause": 0, "scene_end": 1, "scene_transition": 1,
+                "sentence_end": 2, "shot_cut": 3}
     clusters: list[list[tuple[float, str]]] = []
     for event in sorted(events):
         if clusters and event[0] - clusters[-1][-1][0] <= 1.2:
@@ -81,6 +87,16 @@ def generate_candidates(evidence: dict[str, Any]) -> list[dict[str, Any]]:
                           if float(segment["start"]) < anchor < float(segment["end"])
                           and float(segment["end"]) - float(segment["start"]) > 6), None)
         nearby = [scene for scene in scenes if float(scene["start"]) <= anchor + 2 and float(scene["end"]) >= anchor - 2]
+        preceding = max(
+            (scene for scene in scenes if float(scene["start"]) < anchor and float(scene["end"]) <= anchor + 2),
+            key=lambda scene: float(scene["end"]), default=None,
+        )
+        preceding_brand_matches = list((preceding or {}).get("brand_matches", []))
+        brand_recommendations = [item for item in preceding_brand_matches if item.get("recommended")][:3]
+        blocked_brand_matches = [item for item in preceding_brand_matches if item.get("blocked")][:3]
+        nearby_transition = next((item for item in transitions
+                                  if abs(float(item["time"]) - anchor) <= 1.2
+                                  and item.get("continuity") == "new_scene"), None)
         proposals.append({
             "time": anchor, "signals": signals,
             "evidence": [
@@ -90,11 +106,18 @@ def generate_candidates(evidence: dict[str, Any]) -> list[dict[str, Any]]:
             "after_text": str(following[0].get("text", ""))[:220] if following else "",
             "timing_quality": "coarse" if enclosing else "phrase",
             "scene_context": " | ".join(str(scene["summary"])[:200] for scene in nearby[:2]),
+            "preceding_scene_context": str((preceding or {}).get("summary", ""))[:200],
+            "preceding_scene_mood": ", ".join(str(value) for value in (preceding or {}).get("tone", [])[:5]),
+            "preceding_sensitive_contexts": list((preceding or {}).get("sensitive_contexts", [])),
+            "brand_recommendations": brand_recommendations,
+            "blocked_brand_matches": blocked_brand_matches,
+            "transition_kind": nearby_transition.get("kind", "") if nearby_transition else "",
+            "transition_evidence": nearby_transition.get("evidence", "") if nearby_transition else "",
         })
 
     def strength(item: dict[str, Any]) -> tuple[int, float]:
         signals = item["signals"]
-        return (3 * ("scene_end" in signals) + 2 * ("low_audio_pause" in signals)
+        return (3 * ("scene_end" in signals or "scene_transition" in signals) + 2 * ("low_audio_pause" in signals)
                 + ("sentence_end" in signals) + ("shot_cut" in signals), -item["time"])
 
     # Keep at most one top proposal per time bucket before filling spare slots.
@@ -125,7 +148,9 @@ def score_candidates(candidates: list[dict[str, Any]], model: str) -> list[dict[
     if not api_key:
         raise BreakScoringError("OPENAI_API_KEY is not configured for break scoring.")
     compact = [{key: item[key] for key in (
-        "candidate_id", "time", "signals", "before_text", "after_text", "timing_quality", "scene_context"
+        "candidate_id", "time", "signals", "before_text", "after_text", "timing_quality", "scene_context",
+        "preceding_scene_context", "preceding_scene_mood", "preceding_sensitive_contexts",
+        "brand_recommendations", "blocked_brand_matches", "transition_kind", "transition_evidence",
     )} for item in candidates]
     payload = {
         "model": model, "store": False, "max_output_tokens": 5500,
@@ -134,7 +159,11 @@ def score_candidates(candidates: list[dict[str, Any]], model: str) -> list[dict[
                 "You judge whether an interruption would feel natural in Bengali drama. "
                 "Score every supplied candidate exactly once. Naturalness is 0 to 1 (higher is better); "
                 "disruption_risk is 0 to 1 (higher is worse); confidence is 0 to 1. "
-                "Use the scene summary and dialogue on both sides. Penalize tension, unfinished speech, "
+                "Use the scene summary and dialogue on both sides. Penalize tension and unfinished speech; "
+                "explicitly use the preceding scene's tone and sensitive-context tags when deciding whether an "
+                "interruption fits the mood. Treat a verified setting/activity/story transition as stronger "
+                "scene-boundary evidence than "
+                "a camera-only cut. "
                 "emotionally intense moments, and uncertainty. Explain each score in one short sentence. "
                 "If timing_quality is coarse, the transcript covers a broad audio chunk; use it only as "
                 "general context and do not claim exact words occur at the candidate time. "

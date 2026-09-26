@@ -4,7 +4,7 @@ An AI-first contextual ad placement MVP for Bengali video. This repository is be
 
 ## Current release
 
-**Phases 0–3 are deployed and end-to-end tested.** Go handles uploads, jobs, and deterministic policy. The Python worker supports Bengali ASR via Sarvam Saaras v4 or Groq Whisper, detects low-audio intervals and shot cuts, and asks OpenAI for structured scene evidence and break naturalness scores. A Go policy then rejects breaks during speech, uncertain or sensitive scenes, and unfinished thoughts, and enforces pacing and ad-load limits. The UI shows accepted and withheld moments with seekable markers and exact reasons; a saved analysis can be opened with `?job=<id>`. Phase 3 reuses previous evidence when available, so adding break scoring need not require another ASR pass on the same source. The hosted positive selection was verified on a constructed two-scene test fixture; the tested unmodified real excerpts had no eligible break and were correctly withheld. Brand matching, VMAP, and ad playback remain ahead.
+**Phases 0–3 are deployed; Phase 4 scene continuity, brand fit, and reviewer placement controls are in implementation.** Go handles uploads, jobs, and deterministic policy. The Python worker supports Bengali ASR via Sarvam Saaras v4 or Groq Whisper, detects low-audio intervals and shot cuts, and asks OpenAI for structured scene evidence and break naturalness scores. A Go policy rejects breaks during speech, uncertain or sensitive scenes, and unfinished thoughts, and enforces pacing and ad-load limits. The UI shows accepted and withheld moments with seekable markers and exact reasons; a saved analysis can be opened with `?job=<id>`. The hosted positive selection was verified on a constructed two-scene test fixture; the tested unmodified real excerpts had no eligible break and were correctly withheld.
 
 ## Run locally
 
@@ -49,7 +49,7 @@ The container includes Go, Python 3, and FFmpeg. Set the selected ASR provider a
 
 Job metadata, transcript, scene evidence, and pause intervals are atomically stored as private `.job.json` sidecars alongside the uploaded videos. Interrupted jobs restore as retryable failures; active inference is not resumed automatically.
 
-Phase 3 policy uses a 15-second planning ad, at least 15 seconds of programme before a break, at least 10 seconds after, a 180-second gap between selected breaks, at most 4 breaks per hour (rounded up for shorter clips), and at most 20% planned ad load. The Go policy also requires a verified low-audio pause, no overlapping speech, supported scene context on both sides, and passing AI scores. A break is withheld when evidence is missing or uncertain. Once actual creative durations exist in Phase 4–5, the policy must be rechecked using each selected creative's duration before playback.
+The current release uses a 15-second planning ad, at least 15 seconds of programme before a break, at least 10 seconds after, at most 4 breaks per 30 minutes, a 300-second minimum gap, and at most 20% planned ad load. The Go policy also requires a verified low-audio pause, no overlapping speech, supported scene context on both sides, and passing AI scores. A break is withheld when evidence is missing or uncertain. Phase 4 adds reviewer-controlled `k` markers within these limits. Once actual creative durations exist in Phase 5, the policy must be rechecked using each selected creative's duration before playback.
 
 ## Project notes
 

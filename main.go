@@ -30,9 +30,9 @@ const (
 	defaultAddr       = ":8080"
 	defaultUploadRoot = "data/uploads"
 	maxUploadBytes    = 500 << 20
-	scenePromptVer    = "scene-evidence-v3"
+	scenePromptVer    = "scene-evidence-v4-transition-probes"
 	breakPromptVer    = "break-naturalness-v2"
-	analysisVersion   = "phase3-break-v3"
+	analysisVersion   = "phase4-transition-v4"
 )
 
 type MediaInfo struct {
@@ -184,9 +184,19 @@ func currentAnalysisCacheKey(contentHash string) string {
 	if breakModel == "" {
 		breakModel = sceneModel
 	}
+	brandCatalogPath := strings.TrimSpace(os.Getenv("AI_BRANDS_PATH"))
+	if brandCatalogPath == "" {
+		brandCatalogPath = filepath.Join("assets", "brands.json")
+	}
+	brandCatalogBytes, err := os.ReadFile(brandCatalogPath)
+	brandCatalogHash := "missing-brand-catalogue"
+	if err == nil {
+		catalogSum := sha256.Sum256(brandCatalogBytes)
+		brandCatalogHash = hex.EncodeToString(catalogSum[:])
+	}
 	parts := strings.Join([]string{
 		contentHash, provider, asrModel, sceneModel, scenePromptVer, breakModel, breakPromptVer, analysisVersion,
-		"16", "0.3", "300", "silencedetect:-32dB:0.45s",
+		"16", "0.3", "300", "silencedetect:-32dB:0.45s", brandCatalogHash,
 	}, "|")
 	sum := sha256.Sum256([]byte(parts))
 	return hex.EncodeToString(sum[:])

@@ -11,29 +11,34 @@ const (
 	breakPolicyVersion = "break-policy-v1"
 	minLeadSeconds     = 15.0
 	minTailSeconds     = 10.0
-	minBreakGap        = 180.0
+	minBreakGap        = 300.0
 	contextGuard       = 8.0
 	plannedAdSeconds   = 15.0
 	maxAdLoad          = 0.20
-	maxBreaksPerHour   = 4
+	maxBreaksPerHour   = 8
 )
 
 type BreakCandidate struct {
-	CandidateID    string         `json:"candidate_id"`
-	Time           float64        `json:"time"`
-	Signals        []string       `json:"signals"`
-	Evidence       []string       `json:"evidence"`
-	BeforeText     string         `json:"before_text"`
-	AfterText      string         `json:"after_text"`
-	SceneContext   string         `json:"scene_context"`
-	Naturalness    float64        `json:"naturalness"`
-	DisruptionRisk float64        `json:"disruption_risk"`
-	Confidence     float64        `json:"confidence"`
-	AIReason       string         `json:"ai_reason"`
-	AIModel        string         `json:"ai_model"`
-	AIPromptVer    string         `json:"ai_prompt_version"`
-	Decision       string         `json:"decision"`
-	Reasons        []PolicyReason `json:"reasons"`
+	CandidateID          string            `json:"candidate_id"`
+	Time                 float64           `json:"time"`
+	Signals              []string          `json:"signals"`
+	Evidence             []string          `json:"evidence"`
+	BeforeText           string            `json:"before_text"`
+	AfterText            string            `json:"after_text"`
+	SceneContext         string            `json:"scene_context"`
+	TransitionKind       string            `json:"transition_kind,omitempty"`
+	TransitionEvidence   string            `json:"transition_evidence,omitempty"`
+	BrandRecommendations []SceneBrandMatch `json:"brand_recommendations,omitempty"`
+	BlockedBrandMatches  []SceneBrandMatch `json:"blocked_brand_matches,omitempty"`
+	Naturalness          float64           `json:"naturalness"`
+	DisruptionRisk       float64           `json:"disruption_risk"`
+	Confidence           float64           `json:"confidence"`
+	AIReason             string            `json:"ai_reason"`
+	AIModel              string            `json:"ai_model"`
+	AIPromptVer          string            `json:"ai_prompt_version"`
+	Decision             string            `json:"decision"`
+	Potential            bool              `json:"potential"`
+	Reasons              []PolicyReason    `json:"reasons"`
 }
 
 type PolicyReason struct {
@@ -48,6 +53,7 @@ type BreakPolicyInfo struct {
 	MaxAdLoadPercent float64 `json:"max_ad_load_percent"`
 	PlannedAdSeconds float64 `json:"planned_ad_seconds"`
 	AcceptedCount    int     `json:"accepted_count"`
+	MaxBreakCount    int     `json:"max_break_count"`
 }
 
 func validateBreakCandidates(transcript Transcript) error {
@@ -74,6 +80,22 @@ func validateBreakCandidates(transcript Transcript) error {
 			(candidate.AIReason == "" || candidate.AIModel == "" || candidate.AIPromptVer == "") {
 			return errors.New("AI worker omitted a candidate score explanation")
 		}
+		if err := validateBrandMatches(candidate.BrandRecommendations); err != nil {
+			return err
+		}
+		if err := validateBrandMatches(candidate.BlockedBrandMatches); err != nil {
+			return err
+		}
+		for _, match := range candidate.BrandRecommendations {
+			if match.Blocked || !match.Recommended {
+				return errors.New("AI worker recommended a brand blocked by a negative context")
+			}
+		}
+		for _, match := range candidate.BlockedBrandMatches {
+			if !match.Blocked {
+				return errors.New("AI worker marked a safe brand as blocked")
+			}
+		}
 		seen[candidate.CandidateID] = true
 		previous = candidate.Time
 	}
@@ -97,7 +119,7 @@ func terminalSentence(text string) bool {
 func completedSceneBoundary(transcript *Transcript, candidate *BreakCandidate) bool {
 	hasSceneEndSignal := false
 	for _, signal := range candidate.Signals {
-		if signal == "scene_end" {
+		if signal == "scene_end" || signal == "scene_transition" {
 			hasSceneEndSignal = true
 			break
 		}
@@ -105,8 +127,29 @@ func completedSceneBoundary(transcript *Transcript, candidate *BreakCandidate) b
 	if !hasSceneEndSignal {
 		return false
 	}
+	if containsSignal(candidate.Signals, "scene_transition") {
+		verified := false
+		for _, transition := range transcript.Transitions {
+			if math.Abs(transition.Time-candidate.Time) <= 1.2 && transition.Continuity == "new_scene" && transition.Confidence >= 0.65 {
+				verified = true
+				break
+			}
+		}
+		if !verified {
+			return false
+		}
+	}
 	for _, scene := range transcript.Scenes {
 		if math.Abs(scene.End-candidate.Time) <= 1.2 && scene.DialogueState == "completed_thought" {
+			return true
+		}
+	}
+	return false
+}
+
+func containsSignal(signals []string, target string) bool {
+	for _, signal := range signals {
+		if signal == target {
 			return true
 		}
 	}
@@ -197,11 +240,17 @@ func applyBreakPolicy(transcript *Transcript) {
 		MaxBreaksPerHour: maxBreaksPerHour, MaxAdLoadPercent: maxAdLoad * 100,
 		PlannedAdSeconds: plannedAdSeconds,
 	}
+	maxCount := int(math.Ceil(transcript.Duration / 3600 * maxBreaksPerHour))
+	if maxCount < 1 {
+		maxCount = 1
+	}
+	transcript.BreakPolicy.MaxBreakCount = maxCount
 	eligible := make([]int, 0, len(transcript.BreakCandidates))
 	for index := range transcript.BreakCandidates {
 		candidate := &transcript.BreakCandidates[index]
 		candidate.Decision, candidate.Reasons = "rejected", nil
 		candidateEvidenceReasons(transcript, candidate)
+		candidate.Potential = len(candidate.Reasons) == 0
 		if len(candidate.Reasons) == 0 {
 			eligible = append(eligible, index)
 		}
@@ -219,10 +268,6 @@ func applyBreakPolicy(transcript *Transcript) {
 		}
 		return a.Time < b.Time
 	})
-	maxCount := int(math.Ceil(transcript.Duration / 3600 * maxBreaksPerHour))
-	if maxCount < 1 {
-		maxCount = 1
-	}
 	selected := make([]float64, 0, maxCount)
 	for _, index := range eligible {
 		candidate := &transcript.BreakCandidates[index]
@@ -242,7 +287,7 @@ func applyBreakPolicy(transcript *Transcript) {
 			}
 		}
 		if tooClose {
-			addReason(candidate, "minimum_gap", "Another selected break is within 180 seconds.")
+			addReason(candidate, "minimum_gap", "Another selected break is within 300 seconds.")
 			continue
 		}
 		candidate.Decision = "accepted"
