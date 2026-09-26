@@ -56,7 +56,8 @@ def generate_candidates(evidence: dict[str, Any]) -> list[dict[str, Any]]:
         if any(abs(float(cut) - (float(p["start"]) + float(p["end"])) / 2) <= 1.2 for p in pauses):
             add(float(cut), "shot_cut")
     for segment in segments:
-        if str(segment.get("text", "")).rstrip().endswith(("।", ".", "?", "!", "？")):
+        if (float(segment["end"]) - float(segment["start"]) <= 6
+                and str(segment.get("text", "")).rstrip().endswith(("।", ".", "?", "!", "？"))):
             end = float(segment["end"])
             if any(float(p["start"]) - 0.35 <= end <= float(p["end"]) + 0.35 for p in pauses):
                 add(end, "sentence_end")

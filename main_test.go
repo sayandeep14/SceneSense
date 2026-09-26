@@ -25,8 +25,8 @@ func TestAnalysisCacheKeyIncludesConfiguredPipelineVersions(t *testing.T) {
 	t.Setenv("OPENAI_BREAK_MODEL", "")
 	contentHash := "fixture-content-hash"
 	parts := strings.Join([]string{
-		contentHash, "groq", "whisper-large-v3-turbo", "gpt-4o-mini", "scene-evidence-v2",
-		"gpt-4o-mini", "break-naturalness-v2", "phase3-break-v2",
+		contentHash, "groq", "whisper-large-v3-turbo", "gpt-4o-mini", "scene-evidence-v3",
+		"gpt-4o-mini", "break-naturalness-v2", "phase3-break-v3",
 		"16", "0.3", "300", "silencedetect:-32dB:0.45s",
 	}, "|")
 	expected := sha256.Sum256([]byte(parts))
@@ -46,8 +46,8 @@ func TestAnalysisCacheKeyIncludesConfiguredPipelineVersions(t *testing.T) {
 		t.Fatal("cache key did not change after the ASR provider changed")
 	}
 	parts = strings.Join([]string{
-		contentHash, "sarvam", "saaras:v4", "gpt-4o-mini", "scene-evidence-v2",
-		"gpt-4o-mini", "break-naturalness-v2", "phase3-break-v2",
+		contentHash, "sarvam", "saaras:v4", "gpt-4o-mini", "scene-evidence-v3",
+		"gpt-4o-mini", "break-naturalness-v2", "phase3-break-v3",
 		"16", "0.3", "300", "silencedetect:-32dB:0.45s",
 	}, "|")
 	expected = sha256.Sum256([]byte(parts))

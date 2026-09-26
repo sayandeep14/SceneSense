@@ -30,9 +30,9 @@ const (
 	defaultAddr       = ":8080"
 	defaultUploadRoot = "data/uploads"
 	maxUploadBytes    = 500 << 20
-	scenePromptVer    = "scene-evidence-v2"
+	scenePromptVer    = "scene-evidence-v3"
 	breakPromptVer    = "break-naturalness-v2"
-	analysisVersion   = "phase3-break-v2"
+	analysisVersion   = "phase3-break-v3"
 )
 
 type MediaInfo struct {

@@ -16,7 +16,7 @@ class WorkerTests(unittest.TestCase):
             "duration": 80,
             "scenes": [{"start": 0, "end": 40, "summary": "The conversation ends."},
                        {"start": 40, "end": 80, "summary": "A quiet walk begins."}],
-            "segments": [{"start": 10, "end": 39.8, "text": "কথা শেষ।"},
+            "segments": [{"start": 36, "end": 39.8, "text": "কথা শেষ।"},
                          {"start": 42, "end": 50, "text": "চলো।"}],
             "silence_intervals": [{"start": 39.9, "end": 41.1, "duration": 1.2}],
             "shot_boundaries": [40.2],
@@ -91,6 +91,7 @@ class WorkerTests(unittest.TestCase):
                             "sensitive_contexts": [], "activities": [], "tone": [], "evidence": []}],
                 "silence_intervals": [{"start": 39.5, "end": 41.5, "duration": 2}],
                 "shot_boundaries": [], "scene_analysis_status": "complete",
+                "scene_prompt_version": worker.PHASE2_SCENE_PROMPT_VERSION,
                 "content_hash": digest, "cache_key": phase2_key, "cache_hit": False,
             }
             worker._write_cache(root / f"analysis-{phase2_key}.json", {
@@ -105,10 +106,14 @@ class WorkerTests(unittest.TestCase):
                         for item in candidates]
 
             with patch("worker.extract_audio", side_effect=AssertionError("ASR should be reused")):
-                with patch("worker.score_candidates", side_effect=fake_score):
-                    result = worker.run({"video_path": str(video), "work_dir": str(root),
-                                         "brands_path": str(brands), "content_hash": digest})
+                with patch("worker.sample_frames", return_value=[{"time": 0, "data_url": "fixture"}]):
+                    with patch("worker.analyze_scenes", return_value=evidence["scenes"]) as scene_request:
+                        with patch("worker.score_candidates", side_effect=fake_score):
+                            result = worker.run({"video_path": str(video), "work_dir": str(root),
+                                                 "brands_path": str(brands), "content_hash": digest})
             self.assertTrue(result["evidence_cache_hit"])
+            self.assertEqual(scene_request.call_count, 1)
+            self.assertEqual(result["scene_prompt_version"], worker.SCENE_PROMPT_VERSION)
             self.assertEqual(result["break_scoring_status"], "complete")
             self.assertEqual(len(result["break_candidates"]), 1)
             self.assertNotEqual(result["cache_key"], phase2_key)
@@ -400,6 +405,7 @@ class WorkerTests(unittest.TestCase):
         user_input = request_payload["input"][1]["content"]
         self.assertEqual(sum(item["type"] == "input_image" for item in user_input), 1)
         self.assertIn("9.00", user_input[0]["text"])
+        self.assertIn("arbitrary 25-second chunks", user_input[0]["text"])
         self.assertEqual(request.call_args.args[0].get_header("User-agent"), "hoichoi-contextual-ad-lab/0.1")
 
     def test_content_hash_cache_hits_and_invalidates_with_pipeline_version(self):

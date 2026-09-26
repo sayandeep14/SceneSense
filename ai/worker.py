@@ -30,8 +30,9 @@ SARVAM_CHUNK_SECONDS = 25
 ASR_PROVIDER = os.environ.get("ASR_PROVIDER", "groq").strip().lower() or "groq"
 SCENE_MODEL = os.environ.get("OPENAI_VISION_MODEL", "gpt-4o-mini").strip() or "gpt-4o-mini"
 BREAK_MODEL = os.environ.get("OPENAI_BREAK_MODEL", SCENE_MODEL).strip() or SCENE_MODEL
-SCENE_PROMPT_VERSION = "scene-evidence-v2"
-PIPELINE_CACHE_VERSION = "phase3-break-v2"
+SCENE_PROMPT_VERSION = "scene-evidence-v3"
+PHASE2_SCENE_PROMPT_VERSION = "scene-evidence-v2"
+PIPELINE_CACHE_VERSION = "phase3-break-v3"
 PHASE2_CACHE_VERSION = "phase2-sarvam-asr-v1"
 CUT_DETECTION_THRESHOLD = 0.30
 MAX_AUDIO_BYTES = 25 * 1024 * 1024
@@ -553,7 +554,8 @@ def detect_shot_boundaries(video_path: Path, duration: float) -> list[float]:
 def _cache_key(content_hash: str, *, phase2: bool = False) -> str:
     provider = _asr_provider()
     parts = [
-        content_hash, provider, _provider_model(provider), SCENE_MODEL, SCENE_PROMPT_VERSION,
+        content_hash, provider, _provider_model(provider), SCENE_MODEL,
+        PHASE2_SCENE_PROMPT_VERSION if phase2 else SCENE_PROMPT_VERSION,
     ]
     if not phase2:
         parts.extend((BREAK_MODEL, BREAK_PROMPT_VERSION))
@@ -735,8 +737,12 @@ def analyze_scenes(
             f"FFmpeg visual shot-cut timestamps in seconds: {cut_text}\n"
             "Timestamped Bengali ASR transcript (may contain recognition errors):\n"
             f"{_transcript_context(transcript) or '[no transcript text]'}\n\n"
-            "Analyze the programme as scenes. Return approximate start/end times based on supplied frames, transcript, "
-            "and shot cuts. Prefer aligning a scene start/end to a nearby shot cut when the visual change supports it; "
+            "Analyze the programme as semantically coherent scenes. The ASR transcript is packaged in arbitrary "
+            "25-second chunks; chunk starts and ends are NOT sentence or scene boundaries. A real scene can span "
+            "several transcript chunks. Return the fewest narrative scenes supported by the sampled frames, "
+            "spoken topic, and shot cuts. For every internal boundary require independent evidence of a story "
+            "change, such as a change in setting/activity with a visual cut; never split solely at an ASR chunk edge. "
+            "Prefer aligning a scene start/end to a nearby shot cut when the visual change supports it; "
             "do not create a new semantic scene for every camera cut. Keep scenes chronological and in bounds. "
             "Describe visible or spoken evidence separately from uncertain inference. Tag a sensitive context only "
             "when evidence supports it; use an empty sensitive_contexts list otherwise. Do not invent dialogue. "
@@ -810,6 +816,23 @@ def analyze_scenes(
     return scenes
 
 
+def _refresh_scenes(output: dict[str, Any], video_path: Path, work_dir: Path) -> None:
+    """Refresh visual evidence without repeating a cached ASR pass."""
+    output.update({
+        "scenes": [], "scene_analysis_status": "unavailable", "scene_analysis_error": "",
+        "scene_model": SCENE_MODEL, "scene_prompt_version": SCENE_PROMPT_VERSION,
+    })
+    try:
+        frames = sample_frames(video_path, work_dir, output["duration"])
+        output["scenes"] = analyze_scenes(
+            frames, output, output.get("silence_intervals", []), output["duration"],
+            output.get("shot_boundaries", []),
+        )
+        output["scene_analysis_status"] = "complete"
+    except WorkerError as exc:
+        output["scene_analysis_error"] = str(exc)
+
+
 def run(request: dict[str, Any]) -> dict[str, Any]:
     video_path = Path(str(request.get("video_path", ""))).resolve()
     work_dir = Path(str(request.get("work_dir", ""))).resolve()
@@ -831,6 +854,8 @@ def run(request: dict[str, Any]) -> dict[str, Any]:
     phase2_evidence = _read_cache(work_dir / f"analysis-{phase2_key}.json", content_hash, phase2_key)
     if phase2_evidence is not None:
         output = {**phase2_evidence, "cache_key": cache_key, "cache_hit": False, "evidence_cache_hit": True}
+        if output.get("scene_prompt_version") != SCENE_PROMPT_VERSION:
+            _refresh_scenes(output, video_path, work_dir)
     else:
         audio_path = extract_audio(video_path, work_dir)
         try:
@@ -868,18 +893,7 @@ def run(request: dict[str, Any]) -> dict[str, Any]:
         except WorkerError as exc:
             output["shot_detection_error"] = str(exc)
 
-        try:
-            frames = sample_frames(video_path, work_dir, transcript["duration"])
-            scenes = analyze_scenes(
-                frames, transcript, output["silence_intervals"], transcript["duration"],
-                output["shot_boundaries"],
-            )
-            output.update({
-                "scenes": scenes,
-                "scene_analysis_status": "complete",
-            })
-        except WorkerError as exc:
-            output["scene_analysis_error"] = str(exc)
+        _refresh_scenes(output, video_path, work_dir)
 
     output["break_model"] = BREAK_MODEL
     output["break_prompt_version"] = BREAK_PROMPT_VERSION
