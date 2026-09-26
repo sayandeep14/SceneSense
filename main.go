@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"embed"
 	"encoding/hex"
 	"encoding/json"
@@ -69,6 +70,7 @@ type server struct {
 	pythonBin     string
 	workerPath    string
 	brandsPath    string
+	demoPassword  string
 	analysisSlots chan struct{}
 }
 
@@ -87,7 +89,8 @@ func newServer(logger *slog.Logger, uploadDir string) *server {
 	}
 	app := &server{
 		logger: logger, uploadDir: uploadDir, jobs: make(map[string]Job), byHash: make(map[string]string),
-		pythonBin: pythonBin, workerPath: workerPath, brandsPath: brandsPath, analysisSlots: make(chan struct{}, 1),
+		pythonBin: pythonBin, workerPath: workerPath, brandsPath: brandsPath,
+		demoPassword: strings.TrimSpace(os.Getenv("DEMO_ACCESS_PASSWORD")), analysisSlots: make(chan struct{}, 1),
 	}
 	app.restoreJobs()
 	return app
@@ -185,7 +188,28 @@ func (s *server) routes() http.Handler {
 	mux.HandleFunc("GET /api/jobs/{id}", s.getJob)
 	mux.HandleFunc("GET /media/{id}", s.getMedia)
 	mux.Handle("GET /", http.FileServer(http.FS(webRoot)))
-	return s.withLogging(mux)
+	return s.withLogging(s.withDemoAccess(mux))
+}
+
+func (s *server) withDemoAccess(next http.Handler) http.Handler {
+	if s.demoPassword == "" {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Railway needs this endpoint unauthenticated to determine deployment readiness.
+		if r.URL.Path == "/healthz" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		username, password, ok := r.BasicAuth()
+		passwordMatches := subtle.ConstantTimeCompare([]byte(password), []byte(s.demoPassword)) == 1
+		if !ok || username != "demo" || !passwordMatches {
+			w.Header().Set("WWW-Authenticate", `Basic realm="SceneSense Demo", charset="UTF-8"`)
+			http.Error(w, "Demo access required.", http.StatusUnauthorized)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (s *server) retryTranscription(w http.ResponseWriter, r *http.Request) {
@@ -465,6 +489,14 @@ func writeError(w http.ResponseWriter, status int, message string) {
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	demoPassword := strings.TrimSpace(os.Getenv("DEMO_ACCESS_PASSWORD"))
+	if strings.TrimSpace(os.Getenv("RAILWAY_ENVIRONMENT")) != "" && demoPassword == "" {
+		logger.Error("DEMO_ACCESS_PASSWORD must be configured for Railway deployments")
+		os.Exit(1)
+	}
+	if demoPassword != "" {
+		logger.Info("demo access gate enabled", "username", "demo")
+	}
 	addr := os.Getenv("ADDR")
 	if addr == "" {
 		addr = defaultAddr

@@ -14,7 +14,7 @@ Requirements: Go 1.25+, Python 3.10+, and FFmpeg/ffprobe on `PATH`.
 make run
 ```
 
-`make run` loads the ignored `.env` file in the project root and starts the Go app. Configure `GROQ_API_KEY` for Bengali transcription and `OPENAI_API_KEY` for scene understanding; optionally set `OPENAI_VISION_MODEL` (defaults to `gpt-4o-mini`). Never commit or share these keys. Without Groq, uploads stop after media intake. Without OpenAI, successful transcripts are retained and the UI reports that scene analysis is unavailable. Open [http://localhost:8080](http://localhost:8080) and upload an MP4 with an audio track. Videos and private JSON job artifacts are kept in `data/uploads`.
+`make run` loads the ignored `.env` file in the project root and starts the Go app. Configure `GROQ_API_KEY` for Bengali transcription and `OPENAI_API_KEY` for scene understanding; optionally set `OPENAI_VISION_MODEL` (defaults to `gpt-4o-mini`). Never commit or share these keys. Set `DEMO_ACCESS_PASSWORD` to enable the demo's HTTP Basic Auth gate (username `demo`); Railway deployments refuse to start if it is missing. `/healthz` remains available to the platform healthcheck. Without Groq, uploads stop after media intake. Without OpenAI, successful transcripts are retained and the UI reports that scene analysis is unavailable. Open [http://localhost:8080](http://localhost:8080) and upload an MP4 with an audio track. Videos and private JSON job artifacts are kept in `data/uploads`.
 
 Set `ADDR` to change the listen address and `UPLOAD_DIR` to change the upload directory.
 

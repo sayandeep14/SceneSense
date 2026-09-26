@@ -12,7 +12,7 @@ This file records the current release gate and what must pass before work moves 
 - Local Make targets and CI workflow
 - Fake-free intake path scaffold; analysis is not claimed as implemented
 
-**Gate evidence:** formatting, `go vet ./...`, `go test ./...`, and the binary build pass locally. The Docker image builds and a temporary local container returned healthy status, served the UI, and included ffprobe. The public staging target and deploy credentials are not present in the workspace. CI now builds and smoke-tests the image on each pull request.
+**Gate evidence:** formatting, `go vet ./...`, `go test ./...`, and the binary build pass locally. The Docker image builds and a temporary local container returned healthy status, served the UI, and included ffprobe. Railway production is configured with the repository and persistent upload volume. CI builds and smoke-tests the image on each pull request.
 
 ## Phase 1 — Media intake
 
@@ -29,11 +29,11 @@ This file records the current release gate and what must pass before work moves 
 
 **Local release gate evidence:** generated MP4 fixture upload returns accurate metadata, duplicate upload reuses the same job, corrupt and silent videos are rejected, the source playback and job-detail endpoints work, and the studio page is served. The same container image builds, starts, serves health/UI, and includes ffprobe.
 
-**Hosted release gate:** deploy to an agreed staging target, then upload and play a fixture through that deployed URL. Hosting is not configured in this workspace.
+**Hosted release gate:** the Railway production service is online with persistent upload storage; protected public demo deployment and end-to-end upload verification are in progress.
 
 ## Phase 2 — AI evidence layer
 
-**Status: local implementation and verification complete; staging/E2E hosted gate pending.**
+**Status: local implementation and verification complete; protected production demo release in progress.**
 
 - Go remains responsible for upload, API, job lifecycle, and serving the current UI.
 - A dependency-free Python worker extracts mono 16 kHz audio, calls Groq Whisper Large v3 Turbo, validates timestamps, detects low-audio intervals and visual shot cuts with FFmpeg, and samples at most 16 low-resolution frames.
@@ -45,10 +45,11 @@ This file records the current release gate and what must pass before work moves 
 - AI processing runs asynchronously with a single in-process slot; failed transcripts can be retried.
 - Transcript segments are visible in the UI and their timestamps seek the source player.
 - `.env` is ignored by Git and excluded from the Docker build context; local `make run` loads it. Railway should receive secrets as runtime variables.
+- The production demo is protected by HTTP Basic Auth using Railway's `DEMO_ACCESS_PASSWORD` variable and fixed username `demo`; Railway startup fails closed if the password is missing. `/healthz` remains public for Railway healthchecks.
 - The future Next.js/Three.js/GSAP visual redesign is recorded in `Docs/UI-REDESIGN-ROADMAP.md` and deferred.
 
 **Local verification:** `go test -race ./...`, `go vet ./...`, 17 Python worker tests, JavaScript syntax check, container build, and container health/UI-marker/Python/FFmpeg smoke checks pass. Go/Python cache-key parity, cache hits and prompt-version invalidation, shot-cut parsing, scene-edge snapping, the JSON boundary, persistence, restoration, and interrupted-job behavior have deterministic coverage. Headless Chrome rendered the studio page at 1440×1100 for visual review. FFmpeg detected 400 shot cuts in the cleared 20-minute `bhojon_bilashi.mp4` sample. No new paid model call was needed for these checks. Hosted deployment is not configured in this workspace.
 
 **Live AI verification:** direct Groq synthetic smoke test returns HTTP 200. The full cleared asset completed the integrated local pipeline with 203 Bengali transcript segments, 14 structured scene summaries, and 137 low-audio intervals. The API exposed the scene evidence in the UI response, and a service restart restored the job and its evidence sidecar (mode 0600). The upload asset is explicitly approved for external processing by the user.
 
-**Remaining Phase 2 gate:** deploy to staging and repeat the upload/evidence flow after a Git remote/initial commit and Railway project/service binding are configured. This workspace currently has no commits or Git remote, and no Railway CLI/project binding. `.env`, `.DS_Store`, and supplied MP4s are excluded from Git. The browser review covered the rendered studio shell; scene evidence rendering is covered by UI code and data tests, but should also be inspected against a completed staging job. A real external-model call is intentionally not part of CI.
+**Remaining Phase 2 gate:** push the access-gate change, verify the protected production deployment, add the public Railway domain, and complete an end-to-end browser upload/evidence check. The Railway CLI is installed and linked locally; the domain is intentionally not created until the gate is deployed. `.env`, `.DS_Store`, supplied MP4s, and local `.railway/` link metadata are excluded from Git. A real external-model call is intentionally not part of CI.

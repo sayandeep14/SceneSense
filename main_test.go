@@ -57,6 +57,45 @@ func TestHealthEndpoint(t *testing.T) {
 	}
 }
 
+func TestDemoAccessGateProtectsUIAndAPIButAllowsHealth(t *testing.T) {
+	t.Setenv("DEMO_ACCESS_PASSWORD", "unit-test-demo-password")
+	app, _ := testServer(t)
+	handler := app.routes()
+
+	for _, path := range []string{"/", "/api/jobs"} {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+		if response.Code != http.StatusUnauthorized {
+			t.Errorf("unauthenticated %s status = %d, want 401", path, response.Code)
+		}
+		if response.Header().Get("WWW-Authenticate") == "" {
+			t.Errorf("unauthenticated %s response lacks Basic Auth challenge", path)
+		}
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	request.SetBasicAuth("demo", "wrong-password")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusUnauthorized {
+		t.Errorf("wrong-password status = %d, want 401", response.Code)
+	}
+
+	request = httptest.NewRequest(http.MethodGet, "/", nil)
+	request.SetBasicAuth("demo", "unit-test-demo-password")
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "Make every break") {
+		t.Errorf("valid demo credentials did not serve UI: status=%d", response.Code)
+	}
+
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	if response.Code != http.StatusOK {
+		t.Errorf("unauthenticated healthcheck status = %d, want 200", response.Code)
+	}
+}
+
 func TestJobArtifactsRestoreAcrossServerRestart(t *testing.T) {
 	dir := t.TempDir()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
