@@ -18,11 +18,14 @@ import (
 )
 
 func TestAnalysisCacheKeyIncludesConfiguredPipelineVersions(t *testing.T) {
+	t.Setenv("ASR_PROVIDER", "groq")
+	t.Setenv("GROQ_ASR_MODEL", "whisper-large-v3-turbo")
+	t.Setenv("SARVAM_ASR_MODEL", "")
 	t.Setenv("OPENAI_VISION_MODEL", "gpt-4o-mini")
 	contentHash := "fixture-content-hash"
 	parts := strings.Join([]string{
-		contentHash, "whisper-large-v3-turbo", "gpt-4o-mini", "scene-evidence-v2",
-		"phase2-cut-aware-v1", "16", "0.30", "300", "silencedetect:-32dB:0.45s",
+		contentHash, "groq", "whisper-large-v3-turbo", "gpt-4o-mini", "scene-evidence-v2",
+		"phase2-sarvam-asr-v1", "16", "0.30", "300", "silencedetect:-32dB:0.45s",
 	}, "|")
 	expected := sha256.Sum256([]byte(parts))
 	first := currentAnalysisCacheKey(contentHash)
@@ -32,6 +35,21 @@ func TestAnalysisCacheKeyIncludesConfiguredPipelineVersions(t *testing.T) {
 	t.Setenv("OPENAI_VISION_MODEL", "different-model")
 	if currentAnalysisCacheKey(contentHash) == first {
 		t.Fatal("cache key did not change after the vision model changed")
+	}
+	t.Setenv("OPENAI_VISION_MODEL", "gpt-4o-mini")
+	t.Setenv("ASR_PROVIDER", "sarvam")
+	t.Setenv("SARVAM_ASR_MODEL", "saaras:v4")
+	sarvamKey := currentAnalysisCacheKey(contentHash)
+	if sarvamKey == first {
+		t.Fatal("cache key did not change after the ASR provider changed")
+	}
+	parts = strings.Join([]string{
+		contentHash, "sarvam", "saaras:v4", "gpt-4o-mini", "scene-evidence-v2",
+		"phase2-sarvam-asr-v1", "16", "0.30", "300", "silencedetect:-32dB:0.45s",
+	}, "|")
+	expected = sha256.Sum256([]byte(parts))
+	if sarvamKey != hex.EncodeToString(expected[:]) {
+		t.Fatalf("Sarvam cache key = %q; expected Python-compatible key %q", sarvamKey, hex.EncodeToString(expected[:]))
 	}
 }
 

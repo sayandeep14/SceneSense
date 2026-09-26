@@ -30,9 +30,8 @@ const (
 	defaultAddr       = ":8080"
 	defaultUploadRoot = "data/uploads"
 	maxUploadBytes    = 500 << 20
-	asrModelVersion   = "whisper-large-v3-turbo"
 	scenePromptVer    = "scene-evidence-v2"
-	analysisVersion   = "phase2-cut-aware-v1"
+	analysisVersion   = "phase2-sarvam-asr-v1"
 )
 
 type MediaInfo struct {
@@ -163,12 +162,25 @@ func (s *server) restoreJobs() {
 }
 
 func currentAnalysisCacheKey(contentHash string) string {
+	provider := strings.ToLower(strings.TrimSpace(os.Getenv("ASR_PROVIDER")))
+	if provider == "" {
+		provider = "groq"
+	}
+	asrModel := strings.TrimSpace(os.Getenv("GROQ_ASR_MODEL"))
+	if provider == "sarvam" {
+		asrModel = strings.TrimSpace(os.Getenv("SARVAM_ASR_MODEL"))
+		if asrModel == "" {
+			asrModel = "saaras:v4"
+		}
+	} else if asrModel == "" {
+		asrModel = "whisper-large-v3-turbo"
+	}
 	sceneModel := strings.TrimSpace(os.Getenv("OPENAI_VISION_MODEL"))
 	if sceneModel == "" {
 		sceneModel = "gpt-4o-mini"
 	}
 	parts := strings.Join([]string{
-		contentHash, asrModelVersion, sceneModel, scenePromptVer, analysisVersion,
+		contentHash, provider, asrModel, sceneModel, scenePromptVer, analysisVersion,
 		"16", "0.30", "300", "silencedetect:-32dB:0.45s",
 	}, "|")
 	sum := sha256.Sum256([]byte(parts))

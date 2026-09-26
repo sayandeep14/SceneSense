@@ -94,7 +94,7 @@
     const list = document.querySelector("#transcript-list");
     const retry = document.querySelector("#retry-transcription");
     panel.classList.remove("hidden");
-    retry.classList.toggle("hidden", job.status !== "failed");
+    retry.classList.toggle("hidden", job.status === "queued" || job.status === "processing");
     list.replaceChildren();
 
     if (job.transcript) {
