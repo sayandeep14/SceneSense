@@ -1,0 +1,69 @@
+{
+  "grief": [
+    "grief",
+    "mourning",
+    "funeral",
+    "bereavement",
+    "death",
+    "condolence"
+  ],
+  "medical": [
+    "hospital",
+    "clinic",
+    "medical emergency",
+    "illness",
+    "sick",
+    "disease",
+    "patient"
+  ],
+  "violence": [
+    "violence",
+    "domestic conflict",
+    "abuse",
+    "attack",
+    "assault",
+    "fight"
+  ],
+  "injury": [
+    "injury",
+    "wound",
+    "injured",
+    "accident",
+    "crash",
+    "collision"
+  ],
+  "bathroom": [
+    "bathroom",
+    "washroom",
+    "toilet"
+  ],
+  "food": [
+    "food",
+    "eating",
+    "meal",
+    "dining",
+    "cooking"
+  ],
+  "financial_distress": [
+    "financial distress",
+    "debt",
+    "bankruptcy",
+    "poverty"
+  ],
+  "religious_ritual": [
+    "religious ritual",
+    "prayer",
+    "worship"
+  ],
+  "children_at_risk": [
+    "children at risk",
+    "child abuse",
+    "child in danger"
+  ],
+  "celebration": [
+    "celebration",
+    "wedding",
+    "party",
+    "festival"
+  ]
+}

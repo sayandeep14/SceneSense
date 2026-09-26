@@ -46,6 +46,7 @@ type SceneBrandMatch struct {
 	DisplayName     string   `json:"display_name"`
 	Category        string   `json:"category"`
 	FitScore        float64  `json:"fit_score"`
+	FitSource       string   `json:"fit_source,omitempty"`
 	MatchedContexts []string `json:"matched_contexts"`
 	Reason          string   `json:"reason"`
 	BlockedContexts []string `json:"blocked_contexts"`

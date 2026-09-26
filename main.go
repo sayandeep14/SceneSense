@@ -72,6 +72,8 @@ type server struct {
 	pythonBin     string
 	workerPath    string
 	brandsPath    string
+	adLibraryDir  string
+	adLibraryMu   sync.Mutex
 	demoPassword  string
 	analysisSlots chan struct{}
 }
@@ -89,9 +91,14 @@ func newServer(logger *slog.Logger, uploadDir string) *server {
 	if brandsPath == "" {
 		brandsPath = filepath.Join("assets", "brands.json")
 	}
+	adLibraryDir := strings.TrimSpace(os.Getenv("AD_LIBRARY_DIR"))
+	if adLibraryDir == "" {
+		// Keep uploaded ads on the same persistent storage as uploaded videos.
+		adLibraryDir = filepath.Join(uploadDir, "ads")
+	}
 	app := &server{
 		logger: logger, uploadDir: uploadDir, jobs: make(map[string]Job), byHash: make(map[string]string),
-		pythonBin: pythonBin, workerPath: workerPath, brandsPath: brandsPath,
+		pythonBin: pythonBin, workerPath: workerPath, brandsPath: brandsPath, adLibraryDir: adLibraryDir,
 		demoPassword: strings.TrimSpace(os.Getenv("DEMO_ACCESS_PASSWORD")), analysisSlots: make(chan struct{}, 1),
 	}
 	app.restoreJobs()
@@ -224,6 +231,8 @@ func (s *server) routes() http.Handler {
 	mux.HandleFunc("GET /healthz", s.health)
 	mux.HandleFunc("GET /api/jobs", s.listJobs)
 	mux.HandleFunc("GET /api/brands", s.listBrands)
+	mux.HandleFunc("POST /api/ads", s.uploadAd)
+	mux.HandleFunc("GET /api/jobs/{id}/ad-suggestions", s.adSuggestions)
 	mux.HandleFunc("POST /api/jobs", s.createJob)
 	mux.HandleFunc("POST /api/jobs/{id}/transcribe", s.retryTranscription)
 	mux.HandleFunc("POST /api/jobs/{id}/playback-plan", s.createPlaybackPlan)
@@ -562,12 +571,16 @@ func main() {
 		os.Exit(1)
 	}
 	app := newServer(logger, uploadDir)
+	if err := os.MkdirAll(app.adLibraryDir, 0o750); err != nil {
+		logger.Error("create ad library directory", "error", err)
+		os.Exit(1)
+	}
 	app.aiEnabled = asrConfigured()
 	if !app.aiEnabled {
 		logger.Warn("selected ASR provider is not configured; uploads will stop after media intake")
 	}
 	httpServer := &http.Server{Addr: addr, Handler: app.routes(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Minute, WriteTimeout: 10 * time.Minute, IdleTimeout: 60 * time.Second}
-	logger.Info("server starting", "addr", addr, "upload_dir", uploadDir)
+	logger.Info("server starting", "addr", addr, "upload_dir", uploadDir, "ad_library_dir", app.adLibraryDir)
 	if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		logger.Error("server stopped", "error", err)
 		os.Exit(1)

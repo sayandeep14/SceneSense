@@ -16,7 +16,7 @@ make run
 
 `make run` loads the ignored `.env` file in the project root and starts the Go app. Set `ASR_PROVIDER=groq` (default) with `GROQ_API_KEY`, or `ASR_PROVIDER=sarvam` with `SARVAM_API_KEY` for Saaras v4 Bengali transcription. Sarvam REST requests use mono 16 kHz WAV chunks of at most 25 seconds; its transcript timestamps are phrase-level. Set `OPENAI_API_KEY` for scene understanding and break scoring; optionally set `OPENAI_VISION_MODEL` and `OPENAI_BREAK_MODEL` (both default to `gpt-4o-mini`). Never commit or share these keys. Set `DEMO_ACCESS_PASSWORD` to enable the demo's HTTP Basic Auth gate (username `demo`); Railway deployments refuse to start if it is missing. `/healthz` remains available to the platform healthcheck. Without the selected ASR provider's key, uploads stop after media intake. Without OpenAI, successful transcripts are retained and the UI reports that scene analysis is unavailable. Open [http://localhost:8080](http://localhost:8080) and upload an MP4 with an audio track. Videos and private JSON job artifacts are kept in `data/uploads`.
 
-Set `ADDR` to change the listen address and `UPLOAD_DIR` to change the upload directory.
+Set `ADDR` to change the listen address, `UPLOAD_DIR` to change the upload directory, and `AD_LIBRARY_DIR` (default `<UPLOAD_DIR>/ads`, so ads share the videos' persistent volume) to change where uploaded ads and their catalogue are stored.
 
 The demo ad MP4s are generated on a developer machine and stored at the creative URLs in `assets/brands.json`; the server only serves those static files. Generate them with `go run ./cmd/generate-demo-ads` (requires `rsvg-convert` and FFmpeg). The default slate time and mood are sample annotations; pass `-time` and `-mood` to change them, and use `-force` only when you intend to replace the local files. Brand targeting and negative-context metadata remain separate catalogue data, not video content.
 
@@ -48,6 +48,13 @@ The container includes Go, Python 3, and FFmpeg. Set the selected ASR provider a
 - `POST /api/jobs` — multipart form upload with field name `video`
 - `GET /api/jobs/{id}` — intake metadata and job state
 - `GET /media/{id}` — source video playback
+- `GET /api/brands` — built-in catalogue merged with uploaded ads (`source`: `builtin` or `custom`)
+- `POST /api/ads` — multipart ad upload: `video` (MP4, up to 120 s / 200 MB), `brand_name`, `category`, `target_contexts`, `negative_contexts` (comma-separated), `language`
+- `GET /api/jobs/{id}/ad-suggestions?time=<seconds>` — scene before/after a cut and every brand ranked for it, with hard blocks
+
+## Ad library and cut review
+
+Ads uploaded in the Ad library panel are stored under `AD_LIBRARY_DIR` with a `catalog.json` beside them, so they persist across restarts on the mounted volume. The built-in `assets/brands.json` stays read-only; reusing an uploaded brand's name adds another duration to it. Clicking any shot cut or marker on the timeline opens a review window showing the scene before and after the cut (activities, mood, caution tags) and the ads ranked for it. Brands that the scene model scored use their AI fit; brands added after analysis get a deterministic context match against the scene's activities and description. Negative contexts are always enforced in Go — through the shared `ai/context_taxonomy.json` aliases and literal phrase matches — and an uncertain scene blocks every ad. The server re-applies the same check when the VMAP is built.
 
 Job metadata, transcript, scene evidence, and pause intervals are atomically stored as private `.job.json` sidecars alongside the uploaded videos. Interrupted jobs restore as retryable failures; active inference is not resumed automatically.
 

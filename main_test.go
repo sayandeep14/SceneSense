@@ -111,7 +111,9 @@ func TestSelectedASRProviderControlsAvailability(t *testing.T) {
 func testServer(t *testing.T) (*server, string) {
 	t.Helper()
 	dir := t.TempDir()
-	return newServer(slog.New(slog.NewTextHandler(io.Discard, nil)), dir), dir
+	app := newServer(slog.New(slog.NewTextHandler(io.Discard, nil)), dir)
+	app.adLibraryDir = filepath.Join(dir, "ads")
+	return app, dir
 }
 
 func TestHealthEndpoint(t *testing.T) {

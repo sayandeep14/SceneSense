@@ -17,8 +17,11 @@
   let activePlaybackBreak = null;
   let playbackAdStarted = false;
   let adFailureHandled = false;
+  let breakContext = null;
+  let dialogRequest = 0;
   const playedBreaks = new Set();
   const pollingJobs = new Set();
+  const cutDialog = document.querySelector("#cut-dialog");
 
   const formatDuration = (seconds) => {
     const total = Math.max(0, Math.floor(seconds));
@@ -27,6 +30,11 @@
     const remainder = total % 60;
     return hours ? `${hours}:${String(minutes).padStart(2, "0")}:${String(remainder).padStart(2, "0")}` : `${minutes}:${String(remainder).padStart(2, "0")}`;
   };
+  const formatPrecise = (seconds) => {
+    const tenths = Math.round(Math.max(0, seconds) * 10);
+    return `${formatDuration(Math.floor(tenths / 10))}.${tenths % 10}`;
+  };
+  const defaultCreative = (brand) => brand?.creatives.find((creative) => creative.duration_sec === 15) || brand?.creatives[0];
 
   function loadBreakSelection(jobId, candidates, maxCount, duration, policy) {
     const key = `scenesense-break-selection:${jobId}`;
@@ -59,6 +67,8 @@
   }
 
   function selectBestAIBreaks(state, candidates, target, minimumGap) {
+    // Keep ad choices already made for AI markers that remain selected.
+    const previous = new Map(state.selected.filter((item) => item.source === "ai").map((item) => [item.candidateId, item]));
     const selected = state.selected.filter((item) => item.source === "manual");
     const eligible = candidates.filter((candidate) => (candidate.potential ||
       (candidate.potential === undefined && candidate.decision === "accepted")) &&
@@ -68,7 +78,7 @@
     for (const candidate of eligible) {
       if (selected.length >= target) break;
       if (selected.some((item) => Math.abs(item.time - candidate.time) < minimumGap)) continue;
-      selected.push({ time: candidate.time, source: "ai", candidateId: candidate.candidate_id });
+      selected.push(previous.get(candidate.candidate_id) || { time: candidate.time, source: "ai", candidateId: candidate.candidate_id });
     }
     state.selected = selected.sort((left, right) => left.time - right.time);
   }
@@ -122,82 +132,43 @@
       return;
     }
     if (!state.selected.length) {
-      status.textContent = "Add or select a break marker first. Local placeholder MP4s show a sample filename, time, and mood; the overlay shows this marker's actual scene context.";
+      status.textContent = "Click a cut on the timeline to see its scene context and choose an ad.";
       return;
     }
-    let allRowsSafe = true;
-    for (const [index, item] of state.selected.entries()) {
+    let allRowsReady = true;
+    for (const item of state.selected) {
+      const candidate = (job.transcript.break_candidates || []).find((entry) => Math.abs(entry.time - item.time) < 0.5);
+      const aiBrand = candidate?.brand_recommendations?.find((match) => !match.blocked)?.brand_id;
+      if (!item.brandId && aiBrand && catalogBrands.some((brand) => brand.brand_id === aiBrand)) item.brandId = aiBrand;
+      const brand = catalogBrands.find((entry) => entry.brand_id === item.brandId);
+      if (brand && !brand.creatives.some((creative) => creative.id === item.creativeId)) item.creativeId = defaultCreative(brand)?.id || "";
+      const creative = brand?.creatives.find((entry) => entry.id === item.creativeId);
+      if (!creative) allRowsReady = false;
       const row = document.createElement("div");
       row.className = "playback-break-row";
       const label = document.createElement("strong");
       label.className = "playback-break-label";
       label.textContent = `${formatDuration(item.time)} · ${item.source === "manual" ? "manual" : "AI"}`;
-      const brandLabel = document.createElement("label");
-      brandLabel.textContent = "Brand";
-      const brandSelect = document.createElement("select");
-      brandSelect.setAttribute("aria-label", `Brand for break at ${formatDuration(item.time)}`);
-      const matches = precedingSceneBrandMatches(job.transcript, item.time);
-      const matchByID = new Map(matches.map((match) => [match.brand_id, match]));
-      const safeBrands = catalogBrands.filter((brand) => matchByID.has(brand.brand_id) && !matchByID.get(brand.brand_id).blocked);
-      const candidate = (job.transcript.break_candidates || []).find((entry) => Math.abs(entry.time - item.time) < 0.5);
-      const aiBrand = candidate?.brand_recommendations?.find((match) => !match.blocked)?.brand_id;
-      if (!item.brandId) item.brandId = safeBrands.some((brand) => brand.brand_id === aiBrand)
-        ? aiBrand : safeBrands[0]?.brand_id || "";
-      const placeholder = document.createElement("option");
-      placeholder.value = "";
-      placeholder.textContent = "Choose a safe brand";
-      brandSelect.append(placeholder);
-      for (const brand of catalogBrands) {
-        const option = document.createElement("option");
-        option.value = brand.brand_id;
-        const fit = matchByID.get(brand.brand_id);
-        option.disabled = !fit || fit.blocked;
-        option.textContent = `${brand.display_name}${fit?.recommended ? ` · AI fit ${Math.round(fit.fit_score * 100)}%` : fit?.blocked ? " · blocked by scene" : fit ? " · reviewer choice" : " · no scene evidence"}`;
-        brandSelect.append(option);
-      }
-      brandSelect.value = item.brandId;
-      if (!item.brandId || !safeBrands.some((brand) => brand.brand_id === item.brandId)) allRowsSafe = false;
-      brandSelect.onchange = () => {
-        item.brandId = brandSelect.value;
-        const brand = catalogBrands.find((entry) => entry.brand_id === item.brandId);
-        item.creativeId = brand?.creatives.find((creative) => creative.duration_sec === 15)?.id || brand?.creatives[0]?.id || "";
-        persist();
-        renderPlaybackPlanner(job, state, persist);
-      };
-      brandLabel.append(brandSelect);
-      const creativeLabel = document.createElement("label");
-      creativeLabel.textContent = "Catalogue creative · demo slate";
-      const creativeSelect = document.createElement("select");
-      creativeSelect.setAttribute("aria-label", `Creative for break at ${formatDuration(item.time)}`);
-      const brand = catalogBrands.find((entry) => entry.brand_id === item.brandId);
-      for (const creative of brand?.creatives || []) {
-        const option = document.createElement("option");
-        option.value = creative.id;
-        option.textContent = `${creative.url.split("/").at(-1)} · ${creative.duration_sec}s · ${creative.language}`;
-        creativeSelect.append(option);
-      }
-      if (!item.creativeId || !(brand?.creatives || []).some((creative) => creative.id === item.creativeId)) {
-        item.creativeId = brand?.creatives.find((creative) => creative.duration_sec === 15)?.id || brand?.creatives[0]?.id || "";
-      }
-      creativeSelect.value = item.creativeId;
-      creativeSelect.disabled = !brand;
-      creativeSelect.onchange = () => {
-        item.creativeId = creativeSelect.value;
-        persist();
-        document.querySelector("#playback-status").textContent = "Creative changed. Build the VMAP again to update the playback plan.";
-        document.querySelector("#play-programme").disabled = true;
-      };
-      creativeLabel.append(creativeSelect);
-      row.append(label, brandLabel, creativeLabel);
+      const choice = document.createElement("span");
+      choice.className = `playback-break-choice${creative ? "" : " playback-break-missing"}`;
+      choice.textContent = creative
+        ? `${brand.display_name} · ${creative.duration_sec}s · ${creative.language}${brand.source === "custom" ? " · uploaded" : ""}`
+        : "No ad chosen yet";
+      const edit = document.createElement("button");
+      edit.type = "button";
+      edit.className = "outline-button";
+      edit.textContent = creative ? "Change ad" : "Choose ad";
+      edit.onclick = () => openCutDialog(item.time);
+      row.append(label, choice, edit);
       rows.append(row);
     }
-    build.disabled = !allRowsSafe;
-    if (!allRowsSafe) {
-      status.textContent = "Choose a brand with clear, non-blocked scene evidence for every marker. If all are blocked or uncertain, playback stays fail-closed.";
+    build.disabled = !allRowsReady;
+    if (!allRowsReady) {
+      status.textContent = "Choose an ad for every marker: click it on the timeline or use Choose ad. If every brand is blocked after a scene, leave that break out.";
     } else if (playbackPlan?.breaks?.length === state.selected.length) {
-      status.textContent = "VMAP ready. Play to pause at each marker, show its local placeholder creative, then resume the programme.";
+      status.textContent = "VMAP ready. Play to pause at each marker, show its creative, then resume the programme.";
     } else {
-      status.textContent = "Brand fit and creative duration are checked again by the server when you build the VMAP.";
+      status.textContent = "Brand safety, spacing, and actual ad durations are checked again by the server when you build the VMAP.";
     }
     build.onclick = async () => {
       build.disabled = true;
@@ -219,7 +190,7 @@
         document.querySelector("#playback-downloads").classList.remove("hidden");
         document.querySelector("#play-programme").disabled = playbackPlan.breaks.length === 0;
         renderPlaybackEventHistory([]);
-        status.textContent = `${payload.break_count} VMAP break${payload.break_count === 1 ? "" : "s"} validated. The XML uses catalogue creative IDs and locally generated placeholder media.`;
+        status.textContent = `${payload.break_count} VMAP break${payload.break_count === 1 ? "" : "s"} validated against the ad library.`;
       } catch (error) {
         showToast(error.message || "Could not create the playback plan.");
         status.textContent = error.message || "Could not create the playback plan.";
@@ -304,6 +275,298 @@
       recordPlaybackEvent("error", item, "programme could not resume automatically");
       showToast("Ad finished. Press play to continue the programme.");
     });
+  }
+
+  function tagRow(label, values, className = "") {
+    const row = document.createElement("div");
+    row.className = "cut-tag-row";
+    const name = document.createElement("span");
+    name.className = "cut-tag-label";
+    name.textContent = label;
+    const tags = document.createElement("div");
+    tags.className = "scene-tags";
+    for (const value of values.length ? values : ["none"]) {
+      const tag = document.createElement("span");
+      tag.className = `scene-tag${values.length ? className : ""}`;
+      tag.textContent = value.replaceAll("_", " ");
+      tags.append(tag);
+    }
+    row.append(name, tags);
+    return row;
+  }
+
+  function sceneBlock(title, scene, detailed) {
+    const block = document.createElement("section");
+    block.className = "cut-scene";
+    const heading = document.createElement("div");
+    heading.className = "cut-scene-heading";
+    const name = document.createElement("strong");
+    name.textContent = title;
+    heading.append(name);
+    if (scene) {
+      const meta = document.createElement("span");
+      meta.textContent = `${formatDuration(scene.start)}–${formatDuration(scene.end)} · ${Math.round(scene.confidence * 100)}% confidence`;
+      heading.append(meta);
+    }
+    const summary = document.createElement("p");
+    summary.className = "cut-scene-summary";
+    summary.textContent = scene?.summary || "No scene evidence covers this side of the cut.";
+    block.append(heading, summary);
+    if (scene && detailed) {
+      block.append(
+        tagRow("Scene context", scene.activities || []),
+        tagRow("Mood", scene.tone || []),
+        tagRow("Caution", scene.sensitive_contexts || [], " scene-tag-sensitive"),
+      );
+    }
+    return block;
+  }
+
+  async function openCutDialog(time) {
+    const context = breakContext;
+    if (!context || !Number.isFinite(time)) return;
+    const video = document.querySelector("#video-preview");
+    video.pause();
+    video.currentTime = time;
+    const existing = context.state.selected.find((item) => Math.abs(item.time - time) < 0.05);
+    const potential = context.candidates.find((candidate) => Math.abs(candidate.time - time) < 0.5 &&
+      (candidate.potential || (candidate.potential === undefined && candidate.decision === "accepted")));
+    const content = document.querySelector("#cut-dialog-content");
+    const confirm = document.querySelector("#cut-dialog-confirm");
+    document.querySelector("#cut-dialog-kind").textContent = existing ? "SELECTED AD BREAK" : potential ? "AI POTENTIAL BREAK" : "SHOT CUT";
+    document.querySelector("#cut-dialog-title").textContent = `Ad break at ${formatPrecise(time)}`;
+    document.querySelector("#cut-dialog-status").textContent = "";
+    document.querySelector("#cut-dialog-remove").classList.toggle("hidden", !existing);
+    confirm.disabled = true;
+    confirm.textContent = existing ? "Update ad break" : "Add ad break";
+    const loading = document.createElement("p");
+    loading.className = "cut-dialog-note";
+    loading.textContent = "Reading the scene and ranking ads…";
+    content.replaceChildren(loading);
+    if (!cutDialog.open) cutDialog.showModal();
+    const request = ++dialogRequest;
+    let payload;
+    try {
+      const response = await fetch(`/api/jobs/${encodeURIComponent(context.job.id)}/ad-suggestions?time=${encodeURIComponent(time)}`);
+      payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || "Ad suggestions are unavailable.");
+    } catch (error) {
+      if (request === dialogRequest) loading.textContent = error.message || "Ad suggestions are unavailable.";
+      return;
+    }
+    if (request !== dialogRequest || !cutDialog.open) return;
+    renderCutDialog(payload, time, existing, context);
+  }
+
+  function renderCutDialog(payload, time, existing, context) {
+    const { job, state, persist, policy, maxCount, duration, candidates } = context;
+    const content = document.querySelector("#cut-dialog-content");
+    const status = document.querySelector("#cut-dialog-status");
+    const confirm = document.querySelector("#cut-dialog-confirm");
+    const remove = document.querySelector("#cut-dialog-remove");
+    content.replaceChildren();
+
+    const notes = [];
+    const candidate = payload.break_candidate;
+    if (candidate?.potential) {
+      notes.push(`AI potential break · naturalness ${Math.round(candidate.naturalness * 100)}% · disruption ${Math.round(candidate.disruption_risk * 100)}%`);
+    } else if (candidate) {
+      notes.push(`AI withheld this moment: ${(candidate.reasons || []).map((reason) => reason.message).join(" ") || "it did not pass the break policy."}`);
+    } else {
+      notes.push("Not an AI break candidate. Adding an ad here is a human review choice.");
+    }
+    if (payload.transition) {
+      notes.push(payload.transition.continuity === "new_scene"
+        ? `Visual check: new scene (${payload.transition.kind.replaceAll("_", " ")})`
+        : payload.transition.continuity === "same_scene" ? "Visual check: same scene, camera change only" : "Visual check: uncertain transition");
+    }
+    const note = document.createElement("p");
+    note.className = `cut-dialog-note${candidate?.potential ? " cut-dialog-note-ok" : ""}`;
+    note.textContent = notes.join(" · ");
+    content.append(note, sceneBlock("Scene before the cut · the ad follows this", payload.scene_before, true));
+    const sameScene = payload.scene_after && payload.scene_before && payload.scene_after.scene_id === payload.scene_before.scene_id;
+    content.append(sceneBlock(sameScene ? "After the cut · the same scene continues" : "Scene after the cut", sameScene ? null : payload.scene_after, false));
+    if (sameScene) content.lastElementChild.querySelector("p").textContent = "The cut falls inside one scene, so an ad here would interrupt it.";
+
+    const suggestions = payload.suggestions || [];
+    const recommended = suggestions.filter((item) => item.recommended);
+    const blockedCount = suggestions.filter((item) => item.blocked).length;
+    const heading = document.createElement("div");
+    heading.className = "cut-suggestions-heading";
+    const headingTitle = document.createElement("strong");
+    headingTitle.textContent = "Suggested ads";
+    const headingMeta = document.createElement("span");
+    headingMeta.textContent = `${recommended.length} recommended · ${suggestions.length - blockedCount - recommended.length} other safe · ${blockedCount} blocked`;
+    heading.append(headingTitle, headingMeta);
+    const list = document.createElement("div");
+    list.className = "cut-suggestions";
+    list.setAttribute("role", "radiogroup");
+    list.setAttribute("aria-label", "Brand for this ad break");
+
+    let selectedBrand = existing?.brandId && suggestions.some((item) => item.brand_id === existing.brandId && !item.blocked)
+      ? existing.brandId : recommended[0]?.brand_id || "";
+    let selectedCreative = existing?.creativeId || "";
+    const issue = existing ? "" : placementLimitMessage(state, time, duration, policy, maxCount);
+    const durationLabel = document.createElement("label");
+    durationLabel.className = "cut-duration";
+    durationLabel.textContent = "Ad duration";
+    const durationSelect = document.createElement("select");
+    durationLabel.append(durationSelect);
+    const update = () => {
+      confirm.disabled = Boolean(issue) || !selectedBrand || !selectedCreative;
+      status.textContent = issue || (suggestions.every((item) => item.blocked)
+        ? "Every ad is blocked or uncertain after this scene, so the break stays empty."
+        : selectedBrand ? "" : "Choose a brand that is not blocked.");
+    };
+    const renderDurations = () => {
+      const suggestion = suggestions.find((item) => item.brand_id === selectedBrand);
+      const creatives = suggestion?.creatives || [];
+      durationSelect.replaceChildren();
+      for (const creative of creatives) {
+        const option = document.createElement("option");
+        option.value = creative.creative_id;
+        option.textContent = `${creative.duration_sec} seconds · ${creative.language}`;
+        durationSelect.append(option);
+      }
+      if (!creatives.some((creative) => creative.creative_id === selectedCreative)) {
+        selectedCreative = (creatives.find((creative) => creative.duration_sec === 15) || creatives[0])?.creative_id || "";
+      }
+      durationSelect.value = selectedCreative;
+      durationSelect.disabled = !creatives.length;
+      update();
+    };
+    durationSelect.onchange = () => { selectedCreative = durationSelect.value; update(); };
+
+    for (const suggestion of suggestions) {
+      const option = document.createElement("label");
+      option.className = `cut-suggestion${suggestion.blocked ? " cut-suggestion-blocked" : ""}${suggestion.recommended ? " cut-suggestion-recommended" : ""}`;
+      const radio = document.createElement("input");
+      radio.type = "radio";
+      radio.name = "cut-brand";
+      radio.value = suggestion.brand_id;
+      radio.disabled = suggestion.blocked;
+      radio.checked = suggestion.brand_id === selectedBrand;
+      radio.onchange = () => { selectedBrand = radio.value; renderDurations(); };
+      const body = document.createElement("span");
+      body.className = "cut-suggestion-body";
+      const top = document.createElement("span");
+      top.className = "cut-suggestion-top";
+      const name = document.createElement("strong");
+      name.textContent = suggestion.display_name;
+      const source = document.createElement("span");
+      source.className = `ad-source-badge${suggestion.source === "custom" ? " ad-source-custom" : ""}`;
+      source.textContent = suggestion.source === "custom" ? "UPLOADED" : "BUILT-IN";
+      const fit = document.createElement("span");
+      fit.className = "cut-fit";
+      fit.textContent = suggestion.blocked ? "Blocked"
+        : `${Math.round(suggestion.fit_score * 100)}% ${suggestion.fit_source === "ai" ? "AI fit" : "context match"}${suggestion.recommended ? " · suggested" : ""}`;
+      top.append(name, source, fit);
+      const reason = document.createElement("span");
+      reason.className = "cut-suggestion-reason";
+      reason.textContent = suggestion.blocked
+        ? `Blocked by scene context: ${(suggestion.blocked_contexts || []).map((value) => value.replaceAll("_", " ")).join(", ")}`
+        : suggestion.reason;
+      const detail = document.createElement("span");
+      detail.className = "cut-suggestion-detail";
+      const matched = suggestion.matched_contexts || [];
+      detail.textContent = `${matched.length ? `Matches: ${matched.join(", ")}` : `Targets: ${(suggestion.target_contexts || []).slice(0, 5).join(", ") || "—"}`} · ${suggestion.creatives.map((creative) => `${creative.duration_sec}s`).join(" / ")}`;
+      body.append(top, reason, detail);
+      option.append(radio, body);
+      list.append(option);
+    }
+    content.append(heading, list, durationLabel);
+    renderDurations();
+
+    confirm.onclick = () => {
+      if (existing) {
+        existing.brandId = selectedBrand;
+        existing.creativeId = selectedCreative;
+      } else {
+        const nearby = candidates.find((item) => (item.potential || (item.potential === undefined && item.decision === "accepted")) &&
+          Math.abs(item.time - time) < 0.5);
+        if (nearby) state.excludedAI = state.excludedAI.filter((id) => id !== nearby.candidate_id);
+        state.selected.push({ time, source: "manual", ...(nearby ? { candidateId: nearby.candidate_id } : {}),
+          brandId: selectedBrand, creativeId: selectedCreative });
+        state.selected.sort((left, right) => left.time - right.time);
+        state.target = Math.max(state.target, state.selected.length);
+        selectBestAIBreaks(state, candidates, state.target, policy.min_gap_seconds);
+      }
+      persist();
+      cutDialog.close();
+      renderBreakDecisions(job);
+      const brand = suggestions.find((item) => item.brand_id === selectedBrand);
+      showToast(`${brand?.display_name || "Ad"} placed at ${formatPrecise(time)}.`);
+    };
+    remove.onclick = () => {
+      if (!existing) return;
+      if (existing.candidateId && !state.excludedAI.includes(existing.candidateId)) state.excludedAI.push(existing.candidateId);
+      state.selected = state.selected.filter((item) => item !== existing);
+      selectBestAIBreaks(state, candidates, state.target, policy.min_gap_seconds);
+      persist();
+      cutDialog.close();
+      renderBreakDecisions(job);
+    };
+  }
+
+  function renderAdLibrary() {
+    const list = document.querySelector("#ad-library-list");
+    const names = document.querySelector("#custom-brand-names");
+    list.replaceChildren();
+    names.replaceChildren();
+    const custom = catalogBrands.filter((brand) => brand.source === "custom");
+    document.querySelector("#ad-library-count").textContent = `${catalogBrands.length} brands · ${custom.length} uploaded`;
+    for (const brand of custom) {
+      const option = document.createElement("option");
+      option.value = brand.display_name;
+      names.append(option);
+    }
+    for (const brand of [...custom].reverse().concat(catalogBrands.filter((entry) => entry.source !== "custom"))) {
+      const item = document.createElement("li");
+      item.className = "ad-library-item";
+      const top = document.createElement("div");
+      top.className = "ad-library-top";
+      const name = document.createElement("strong");
+      name.textContent = brand.display_name;
+      const source = document.createElement("span");
+      source.className = `ad-source-badge${brand.source === "custom" ? " ad-source-custom" : ""}`;
+      source.textContent = brand.source === "custom" ? "UPLOADED" : "BUILT-IN";
+      top.append(name, source);
+      const meta = document.createElement("p");
+      meta.className = "ad-library-meta";
+      meta.textContent = `${brand.category || "uncategorised"} · ${[...new Set(brand.creatives.map((creative) => creative.duration_sec))].sort((a, b) => a - b).map((seconds) => `${seconds}s`).join(" / ")}`;
+      const tags = document.createElement("div");
+      tags.className = "scene-tags";
+      const targets = brand.target_contexts || [];
+      for (const value of targets.slice(0, 5)) {
+        const tag = document.createElement("span");
+        tag.className = "scene-tag";
+        tag.textContent = value;
+        tags.append(tag);
+      }
+      if (targets.length > 5) {
+        const more = document.createElement("span");
+        more.className = "pause-more";
+        more.textContent = `+${targets.length - 5}`;
+        tags.append(more);
+      }
+      for (const value of brand.negative_contexts || []) {
+        const tag = document.createElement("span");
+        tag.className = "scene-tag scene-tag-sensitive";
+        tag.textContent = `not ${value}`;
+        tags.append(tag);
+      }
+      item.append(top, meta, tags);
+      list.append(item);
+    }
+  }
+
+  async function loadCatalog() {
+    const response = await fetch("/api/brands");
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || "The ad library could not be loaded.");
+    catalogBrands = payload.brands || [];
+    renderAdLibrary();
+    if (activeJob?.transcript) renderBreakDecisions(activeJob);
   }
 
   const humanSize = (bytes) => {
@@ -563,8 +826,12 @@
         cutButton.type = "button";
         cutButton.className = "scene-tag scene-cut-tag";
         cutButton.textContent = `shot cut · ${formatDuration(cut)}`;
-        cutButton.setAttribute("aria-label", `Play shot cut at ${formatDuration(cut)}`);
+        cutButton.setAttribute("aria-label", `Choose an ad at shot cut ${formatDuration(cut)}`);
         cutButton.addEventListener("click", () => {
+          if (breakContext?.job.id === job.id) {
+            openCutDialog(cut);
+            return;
+          }
           const video = document.querySelector("#video-preview");
           video.currentTime = cut;
           video.play().catch(() => {});
@@ -603,6 +870,7 @@
     list.replaceChildren();
     empty.classList.add("hidden");
     warning.classList.add("hidden");
+    breakContext = null;
     if (!transcript) return;
     if (!policy?.version) {
       empty.textContent = "This saved analysis predates break selection. Re-run it with current AI to edit markers.";
@@ -625,6 +893,7 @@
       document.querySelector("#playback-downloads").classList.add("hidden");
       document.querySelector("#play-programme").disabled = true;
     };
+    breakContext = { job, state, persist, policy, maxCount, duration, candidates };
     const seek = document.querySelector("#review-seek");
     seek.max = String(duration);
     seek.value = String(video.currentTime || 0);
@@ -636,9 +905,9 @@
       marker.type = "button";
       marker.className = "cut-marker";
       marker.style.left = `${Math.max(0.4, Math.min(99.6, cut / duration * 100))}%`;
-      marker.title = `Shot cut ${formatDuration(cut)} · click to review`;
+      marker.title = `Shot cut ${formatPrecise(cut)} · choose an ad`;
       marker.setAttribute("aria-label", marker.title);
-      marker.onclick = () => { video.currentTime = cut; };
+      marker.onclick = () => openCutDialog(cut);
       cutsLayer.append(marker);
     }
 
@@ -651,23 +920,7 @@
       marker.style.left = `${Math.max(0.6, Math.min(99.4, candidate.time / duration * 100))}%`;
       marker.title = `${isSelected(candidate) ? "Selected" : "AI potential"} ${formatDuration(candidate.time)} · ${Math.round(candidate.confidence * 100)}% confidence`;
       marker.setAttribute("aria-label", marker.title);
-      marker.onclick = () => {
-        const index = state.selected.findIndex((item) => item.candidateId === candidate.candidate_id || Math.abs(item.time - candidate.time) < 0.05);
-        if (index >= 0) {
-          if (!state.excludedAI.includes(candidate.candidate_id)) state.excludedAI.push(candidate.candidate_id);
-          state.selected.splice(index, 1);
-          selectBestAIBreaks(state, candidates, state.target, policy.min_gap_seconds);
-        } else {
-          state.excludedAI = state.excludedAI.filter((id) => id !== candidate.candidate_id);
-          const issue = placementLimitMessage(state, candidate.time, duration, policy, maxCount);
-          if (issue) { showToast(issue); return; }
-          state.selected.push({ time: candidate.time, source: "manual", candidateId: candidate.candidate_id });
-          state.target = Math.max(state.target, state.selected.length);
-          selectBestAIBreaks(state, candidates, state.target, policy.min_gap_seconds);
-        }
-        persist();
-        renderBreakDecisions(job);
-      };
+      marker.onclick = () => openCutDialog(candidate.time);
       potentialLayer.append(marker);
     }
 
@@ -697,27 +950,16 @@
     }
 
     const addMarker = document.querySelector("#add-break-marker");
-    addMarker.onclick = () => {
-      const time = Number(video.currentTime);
-      const issue = placementLimitMessage(state, time, duration, policy, maxCount);
-      if (issue) { showToast(issue); return; }
-      const nearby = potentials.find((candidate) => Math.abs(candidate.time - time) < 0.5);
-      state.selected.push({ time, source: "manual", ...(nearby ? { candidateId: nearby.candidate_id } : {}) });
-      state.selected.sort((left, right) => left.time - right.time);
-      state.target = Math.max(state.target, state.selected.length);
-      selectBestAIBreaks(state, candidates, state.target, policy.min_gap_seconds);
-      persist();
-      renderBreakDecisions(job);
-    };
+    addMarker.onclick = () => openCutDialog(Number(video.currentTime));
 
     for (const item of state.selected) {
       const marker = document.createElement("button");
       marker.type = "button";
       marker.className = `break-marker break-marker-accepted${item.source === "manual" ? " break-marker-manual" : ""}`;
       marker.style.left = `${Math.max(0.8, Math.min(99.2, item.time / duration * 100))}%`;
-      marker.title = `${item.source === "manual" ? "Manual" : "AI selected"} ad marker at ${formatDuration(item.time)}`;
+      marker.title = `${item.source === "manual" ? "Manual" : "AI selected"} ad marker at ${formatDuration(item.time)} · edit ad`;
       marker.setAttribute("aria-label", marker.title);
-      marker.onclick = () => { video.currentTime = item.time; };
+      marker.onclick = () => openCutDialog(item.time);
       selectedLayer.append(marker);
     }
 
@@ -1028,11 +1270,67 @@
     resumeProgramme(item);
   });
 
-  fetch("/api/brands").then((response) => response.json()).then(({ brands = [] }) => {
-    catalogBrands = brands;
-    if (activeJob?.transcript) renderBreakDecisions(activeJob);
-  }).catch(() => {
-    document.querySelector("#playback-status").textContent = "The synthetic brand catalogue could not be loaded; VMAP creation is unavailable.";
+  document.querySelector("#cut-dialog-close").addEventListener("click", () => cutDialog.close());
+  cutDialog.addEventListener("click", (event) => { if (event.target === cutDialog) cutDialog.close(); });
+
+  const adForm = document.querySelector("#ad-upload-form");
+  const adStatus = document.querySelector("#ad-upload-status");
+  adForm.elements.brand_name.addEventListener("input", () => {
+    const value = adForm.elements.brand_name.value.trim().toLowerCase();
+    const brand = catalogBrands.find((entry) => entry.source === "custom" && entry.display_name.toLowerCase() === value);
+    if (!brand) return;
+    adForm.elements.category.value = brand.category === "uncategorised" ? "" : brand.category;
+    adForm.elements.target_contexts.value = (brand.target_contexts || []).join(", ");
+    adForm.elements.negative_contexts.value = (brand.negative_contexts || []).join(", ");
+    adStatus.textContent = `Adding another creative to ${brand.display_name}. Its contexts will be updated to what you submit.`;
+  });
+  adForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const submit = document.querySelector("#ad-upload-submit");
+    const file = adForm.elements.video.files?.[0];
+    const name = adForm.elements.brand_name.value.trim();
+    let problem = "";
+    if (name.length < 2) problem = "Enter a brand name.";
+    else if (!adForm.elements.target_contexts.value.trim()) problem = "Add at least one target context.";
+    else if (!file) problem = "Choose the ad video.";
+    else if (!file.name.toLowerCase().endsWith(".mp4")) problem = "The ad must be an MP4 file.";
+    else if (file.size > 200 * 1024 * 1024) problem = "The ad must be smaller than 200 MB.";
+    if (problem) {
+      adStatus.textContent = problem;
+      return;
+    }
+    const request = new XMLHttpRequest();
+    request.open("POST", "/api/ads");
+    request.responseType = "json";
+    submit.disabled = true;
+    adStatus.textContent = "Uploading…";
+    request.upload.addEventListener("progress", (progress) => {
+      if (progress.lengthComputable) adStatus.textContent = progress.loaded < progress.total
+        ? `Uploading… ${Math.round(progress.loaded / progress.total * 100)}%` : "Checking the video…";
+    });
+    request.addEventListener("load", async () => {
+      submit.disabled = false;
+      const payload = request.response;
+      if (request.status < 200 || request.status >= 300) {
+        adStatus.textContent = payload?.error || "The ad could not be uploaded.";
+        return;
+      }
+      adForm.reset();
+      const creative = payload.brand.creatives.find((entry) => entry.id === payload.creative_id);
+      adStatus.textContent = `${payload.brand.display_name} · ${creative?.duration_sec ?? "?"}s ad saved to the library.`;
+      showToast("Ad saved. It is now suggested wherever its contexts fit.");
+      try { await loadCatalog(); } catch (error) { adStatus.textContent = error.message; }
+    });
+    request.addEventListener("error", () => {
+      submit.disabled = false;
+      adStatus.textContent = "Could not reach the service. Check your connection and try again.";
+    });
+    request.send(new FormData(adForm));
+  });
+
+  loadCatalog().catch(() => {
+    document.querySelector("#ad-library-count").textContent = "Unavailable";
+    document.querySelector("#playback-status").textContent = "The ad library could not be loaded; VMAP creation is unavailable.";
   });
 
   fetch("/api/jobs").then((response) => response.json()).then(({ jobs = [] }) => {

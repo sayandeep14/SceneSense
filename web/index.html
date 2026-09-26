@@ -112,7 +112,7 @@
                     <div id="break-markers" class="break-markers hidden"></div>
                     <span class="wave-start">00:00</span><span class="wave-end">—:—</span>
                   </div>
-                  <div class="review-controls"><label for="review-seek">PREVIEW POSITION <output id="review-time">00:00</output></label><input id="review-seek" type="range" min="0" max="0" step="0.1" value="0" aria-label="Seek precisely through the video"><button id="add-break-marker" class="outline-button" type="button">＋ Place break at playhead</button></div>
+                  <div class="review-controls"><label for="review-seek">PREVIEW POSITION <output id="review-time">00:00</output></label><input id="review-seek" type="range" min="0" max="0" step="0.1" value="0" aria-label="Seek precisely through the video"><button id="add-break-marker" class="outline-button" type="button">＋ Choose ad at playhead</button></div>
                   <div class="timeline-caption"><span class="timeline-spark">✳</span><div><strong id="timeline-empty-title">The story comes first.</strong><p id="timeline-empty-copy">Upload a video to get its first look. Bengali speech and scene analysis are the next milestone.</p></div></div>
                 </div>
                 <section id="transcript-panel" class="transcript-panel hidden" aria-live="polite" aria-label="AI transcript">
@@ -131,12 +131,12 @@
                   <div class="break-heading"><div><strong>Safe break opportunities</strong><span id="break-meta">Waiting for policy review.</span></div><span class="break-policy-tag">AI + POLICY</span></div>
                   <div id="break-warning" class="scene-warning hidden" role="status"></div>
                   <div class="break-count-control"><label for="break-count-range"><span>How many breaks?</span><output id="break-count-value">0</output></label><input id="break-count-range" type="range" min="0" max="0" step="1" value="0"><p id="break-selection-status">AI selects the strongest safe moments. You can adjust every marker.</p></div>
-                  <div class="break-legend"><span><i class="legend-dot all-cuts"></i> All cuts</span><span><i class="legend-dot potential"></i> AI potential</span><span><i class="legend-dot accepted"></i> Selected</span><span><i class="legend-dot rejected"></i> Withheld</span></div>
+                  <div class="break-legend"><span><i class="legend-dot all-cuts"></i> All cuts</span><span><i class="legend-dot potential"></i> AI potential</span><span><i class="legend-dot accepted"></i> Selected</span><span><i class="legend-dot rejected"></i> Withheld</span><span class="legend-hint">Click any cut or marker to choose an ad</span></div>
                   <p id="break-empty" class="break-empty hidden"></p>
                   <ol id="break-list" class="break-list"></ol>
                   <section id="playback-planner" class="playback-planner" aria-label="Ad playback plan">
-                    <div class="playback-planner-heading"><strong>Playback &amp; ad plan</strong><span>VMAP · local demo slate</span></div>
-                    <p class="playback-disclaimer">These black-screen placeholder MP4s are generated locally and served as static files. Ad videos and brand targeting / negative-context metadata are separate inputs; no real ad is served.</p>
+                    <div class="playback-planner-heading"><strong>Playback &amp; ad plan</strong><span>VMAP · ad library</span></div>
+                    <p class="playback-disclaimer">Built-in brands use black-screen placeholder MP4s; uploaded ads play as provided. Brand targeting and negative contexts come from the ad library and are rechecked by the server.</p>
                     <div id="playback-break-config" class="playback-break-config"></div>
                     <div class="playback-actions"><button id="build-vmap" class="outline-button" type="button" disabled>Build VMAP &amp; debug JSON</button><button id="play-programme" class="primary-button" type="button" disabled>▶ Play programme with breaks</button></div>
                     <p id="playback-status" class="playback-status" role="status">Choose at least one marker and a safe catalogue creative.</p>
@@ -149,6 +149,25 @@
             </div>
 
             <aside class="secondary-column">
+              <section id="brands" class="panel ad-library-panel" aria-labelledby="ad-library-title">
+                <div class="side-panel-heading"><div class="step-marker future-marker">◈</div><div><h2 id="ad-library-title">Ad library</h2><p>Upload an ad and describe where it belongs.</p></div></div>
+                <form id="ad-upload-form" class="ad-upload-form" novalidate>
+                  <label>Brand name<input name="brand_name" list="custom-brand-names" required minlength="2" maxlength="60" placeholder="e.g. Brand Tea" autocomplete="off" /><span class="field-hint">Use a synthetic brand name, not a real company. Reuse a name to add another duration.</span></label>
+                  <datalist id="custom-brand-names"></datalist>
+                  <label>Category<input name="category" maxlength="60" placeholder="e.g. beverage/tea" autocomplete="off" /></label>
+                  <label>Target contexts<textarea name="target_contexts" rows="2" required placeholder="family meal, morning, conversation"></textarea><span class="field-hint">Comma-separated scenes where this ad fits.</span></label>
+                  <label>Negative contexts<textarea name="negative_contexts" rows="2" placeholder="funeral, hospital, violence"></textarea><span class="field-hint">Hard blocks: the ad never follows these scenes.</span></label>
+                  <div class="ad-upload-row">
+                    <label class="ad-language-label">Language<input name="language" value="bn" maxlength="3" autocomplete="off" /></label>
+                    <label>Ad video · MP4, up to 2 min<input name="video" type="file" accept="video/mp4,.mp4" required /></label>
+                  </div>
+                  <button id="ad-upload-submit" class="primary-button" type="submit">Upload ad</button>
+                  <p id="ad-upload-status" class="ad-upload-status" role="status"></p>
+                </form>
+                <div class="ad-library-list-heading"><strong>Catalogue</strong><span id="ad-library-count">Loading…</span></div>
+                <ol id="ad-library-list" class="ad-library-list"></ol>
+              </section>
+
               <section class="panel next-panel">
                 <div class="side-panel-heading"><div class="step-marker future-marker">↗</div><div><h2>What happens next</h2><p>A careful path from story to spot.</p></div></div>
                 <div class="next-steps">
@@ -159,7 +178,7 @@
                 <div class="principle-note"><span>✳</span><p><strong>One rule is absolute:</strong> sensitive context blocks an ad match. Uncertainty means we wait.</p></div>
               </section>
 
-              <section id="brands" class="panel policy-panel">
+              <section id="policy" class="panel policy-panel">
                 <div class="policy-heading"><span class="policy-shield">♢</span><div><h2>Viewer-first by design</h2><p>Hard rules that protect the moment.</p></div></div>
                 <div class="policy-row"><span class="policy-check">✓</span><span>No mid-sentence cutaways</span></div>
                 <div class="policy-row"><span class="policy-check">✓</span><span>Respect minimum break spacing</span></div>
@@ -175,6 +194,20 @@
         </div>
       </main>
     </div>
+    <dialog id="cut-dialog" class="cut-dialog" aria-labelledby="cut-dialog-title">
+      <div class="cut-dialog-body">
+        <header class="cut-dialog-header">
+          <div><span id="cut-dialog-kind" class="cut-dialog-eyebrow">SHOT CUT</span><h2 id="cut-dialog-title">Ad break</h2></div>
+          <button id="cut-dialog-close" class="cut-dialog-close" type="button" aria-label="Close">×</button>
+        </header>
+        <div id="cut-dialog-content" class="cut-dialog-content"></div>
+        <footer class="cut-dialog-footer">
+          <p id="cut-dialog-status" class="cut-dialog-status" role="status"></p>
+          <button id="cut-dialog-remove" class="outline-button hidden" type="button">Remove break</button>
+          <button id="cut-dialog-confirm" class="primary-button" type="button" disabled>Add ad break</button>
+        </footer>
+      </div>
+    </dialog>
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
     <script src="/app.js" defer></script>
   </body>

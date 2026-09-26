@@ -31,8 +31,10 @@ type CatalogBrand struct {
 	BrandID          string            `json:"brand_id"`
 	DisplayName      string            `json:"display_name"`
 	Category         string            `json:"category"`
+	TargetContexts   []string          `json:"target_contexts"`
 	NegativeContexts []string          `json:"negative_contexts"`
 	Creatives        []CatalogCreative `json:"creatives"`
+	Source           string            `json:"source,omitempty"`
 }
 
 type PlaybackSelection struct {
@@ -89,10 +91,17 @@ func loadBrandCatalog(path string) ([]CatalogBrand, error) {
 	if err := json.Unmarshal(data, &brands); err != nil || len(brands) == 0 {
 		return nil, errors.New("brand catalogue is invalid")
 	}
+	if err := validateCatalogEntries(brands); err != nil {
+		return nil, err
+	}
+	return brands, nil
+}
+
+func validateCatalogEntries(brands []CatalogBrand) error {
 	seenBrands := make(map[string]bool, len(brands))
 	for _, brand := range brands {
 		if brand.BrandID == "" || brand.DisplayName == "" || seenBrands[brand.BrandID] || len(brand.Creatives) == 0 {
-			return nil, errors.New("brand catalogue contains an invalid entry")
+			return errors.New("brand catalogue contains an invalid entry")
 		}
 		seenBrands[brand.BrandID] = true
 		seenCreatives := make(map[string]bool, len(brand.Creatives))
@@ -101,21 +110,21 @@ func loadBrandCatalog(path string) ([]CatalogBrand, error) {
 				creative.Language == "" || creative.SourceURL == "" ||
 				!strings.HasPrefix(creative.SourceURL, "ads/"+brand.BrandID+"/") ||
 				filepath.Clean(filepath.FromSlash(creative.SourceURL)) != filepath.FromSlash(creative.SourceURL) {
-				return nil, errors.New("brand catalogue contains an invalid creative")
+				return errors.New("brand catalogue contains an invalid creative")
 			}
 			seenCreatives[creative.ID] = true
 		}
 	}
-	return brands, nil
+	return nil
 }
 
 func (s *server) listBrands(w http.ResponseWriter, _ *http.Request) {
-	brands, err := loadBrandCatalog(s.brandsPath)
+	brands, err := s.loadCatalog()
 	if err != nil {
 		writeError(w, http.StatusServiceUnavailable, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"brands": brands, "creative_mode": "locally generated static placeholder MP4s"})
+	writeJSON(w, http.StatusOK, map[string]any{"brands": brands, "creative_mode": "built-in placeholder MP4s plus uploaded ads"})
 }
 
 func findBrand(brands []CatalogBrand, id string) (CatalogBrand, bool) {
@@ -150,7 +159,7 @@ func (s *server) createPlaybackPlan(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "Playback request must contain one JSON object.")
 		return
 	}
-	brands, err := loadBrandCatalog(s.brandsPath)
+	brands, err := s.loadCatalog()
 	if err != nil {
 		writeError(w, http.StatusServiceUnavailable, err.Error())
 		return
@@ -231,17 +240,8 @@ func buildPlaybackPlan(job Job, selections []PlaybackSelection, brands []Catalog
 		if scene == nil {
 			return PlaybackPlan{}, errors.New("scene context is unavailable at a selected ad break")
 		}
-		match, exists := sceneBrandMatch(*scene, selection.BrandID)
-		if !exists {
-			return PlaybackPlan{}, errors.New("scene-level brand safety evidence is unavailable; fail closed")
-		}
-		if match.Blocked {
+		if match := evaluateBrandForScene(*scene, brand); match.Blocked {
 			return PlaybackPlan{}, fmt.Errorf("%s is blocked by preceding scene context: %s", brand.DisplayName, strings.Join(match.BlockedContexts, ", "))
-		}
-		for _, candidate := range job.Transcript.BreakCandidates {
-			if math.Abs(candidate.Time-selection.Time) < 0.5 && selection.Source == "ai" && !candidate.Potential {
-				return PlaybackPlan{}, errors.New("AI-selected placement is not an AI-qualified potential break")
-			}
 		}
 		if selection.Source == "ai" {
 			qualified := false
@@ -483,7 +483,7 @@ func (s *server) recordPlaybackEvent(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) serveCatalogCreative(w http.ResponseWriter, r *http.Request) {
-	brands, err := loadBrandCatalog(s.brandsPath)
+	brands, err := s.loadCatalog()
 	if err != nil {
 		writeError(w, http.StatusServiceUnavailable, err.Error())
 		return
@@ -510,7 +510,7 @@ func (s *server) serveCatalogCreative(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	path := filepath.Join(filepath.Dir(s.brandsPath), relative)
+	path := s.creativeFilePath(brand, sourceURL)
 	if filepath.Ext(path) != ".mp4" {
 		http.NotFound(w, r)
 		return

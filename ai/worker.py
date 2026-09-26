@@ -789,18 +789,9 @@ def _responses_output_text(payload: dict[str, Any]) -> str:
     return "\n".join(chunks)
 
 
-_CONTEXT_GROUPS = {
-    "grief": ("grief", "mourning", "funeral", "bereavement", "death", "condolence"),
-    "medical": ("hospital", "clinic", "medical emergency", "illness", "sick", "disease", "patient"),
-    "violence": ("violence", "domestic conflict", "abuse", "attack", "assault", "fight"),
-    "injury": ("injury", "wound", "injured", "accident", "crash", "collision"),
-    "bathroom": ("bathroom", "washroom", "toilet"),
-    "food": ("food", "eating", "meal", "dining", "cooking"),
-    "financial_distress": ("financial distress", "debt", "bankruptcy", "poverty"),
-    "religious_ritual": ("religious ritual", "prayer", "worship"),
-    "children_at_risk": ("children at risk", "child abuse", "child in danger"),
-    "celebration": ("celebration", "wedding", "party", "festival"),
-}
+# Shared with the Go server so both sides apply the same negative-context blocks.
+_CONTEXT_GROUPS: dict[str, list[str]] = json.loads(
+    Path(__file__).with_name("context_taxonomy.json").read_text(encoding="utf-8"))
 
 
 def _canonical_contexts(values: list[str]) -> set[str]:
