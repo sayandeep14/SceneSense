@@ -195,6 +195,9 @@ func TestStudioPageIsServed(t *testing.T) {
 }
 
 func TestUploadRejectsInvalidVideo(t *testing.T) {
+	if _, err := exec.LookPath("ffprobe"); err != nil {
+		t.Skip("ffprobe is not installed")
+	}
 	app, _ := testServer(t)
 	body, contentType := multipartBody(t, "broken.mp4", []byte("not an mp4"))
 	request := httptest.NewRequest(http.MethodPost, "/api/jobs", body)

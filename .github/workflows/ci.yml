@@ -26,6 +26,11 @@ jobs:
         with:
           python-version: '3.12'
 
+      - name: Install FFmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg
+
       - name: Format check
         run: test -z "$(gofmt -l .)"
 
