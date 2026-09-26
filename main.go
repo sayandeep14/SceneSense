@@ -24,7 +24,7 @@ import (
 	"time"
 )
 
-//go:embed web/*
+//go:embed all:web
 var webFiles embed.FS
 
 const (

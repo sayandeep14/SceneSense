@@ -109,7 +109,7 @@ export default function Page() {
 
   useEffect(() => {
     if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-    const animation = gsap.fromTo(hero.current?.querySelectorAll("[data-reveal]") || [], { y: 22, opacity: 0 }, { y: 0, opacity: 1, duration: 0.7, stagger: 0.11, ease: "power2.out" });
+    const animation = gsap.fromTo(hero.current?.querySelectorAll("[data-reveal]") || [], { y: 18 }, { y: 0, duration: 0.7, stagger: 0.11, ease: "power2.out" });
     return () => animation.kill();
   }, []);
 
