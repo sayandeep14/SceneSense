@@ -262,6 +262,7 @@ func (s *server) routes() http.Handler {
 	mux.HandleFunc("GET /api/jobs/{id}/vast/{breakID}", s.getVAST)
 	mux.HandleFunc("GET /api/jobs/{id}/debug.json", s.getPlaybackDebug)
 	mux.HandleFunc("POST /api/jobs/{id}/optimize", s.optimizePlacements)
+	mux.HandleFunc("POST /api/jobs/{id}/simulate", s.simulatePolicy)
 	mux.HandleFunc("PUT /api/jobs/{id}/review", s.saveReview)
 	mux.HandleFunc("POST /api/jobs/{id}/finalize", s.finalizePlan)
 	mux.HandleFunc("GET /api/jobs/{id}/manifest.json", s.getManifest)

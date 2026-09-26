@@ -55,6 +55,10 @@ type optItem struct {
 // solveSpacing picks exactly k items (all pinned ones included) with at least minBreakGap between
 // neighbours, maximising total score minus a penalty for gaps that stray from even spacing.
 func solveSpacing(items []optItem, k int, duration float64) ([]int, bool) {
+	return solveSpacingWithGap(items, k, duration, minBreakGap)
+}
+
+func solveSpacingWithGap(items []optItem, k int, duration, minGap float64) ([]int, bool) {
 	n := len(items)
 	if k == 0 {
 		for _, item := range items {
@@ -108,7 +112,7 @@ func solveSpacing(items []optItem, k int, duration float64) ([]int, bool) {
 	for c := 2; c <= k; c++ {
 		for j := 0; j < n; j++ {
 			for i := 0; i < j; i++ {
-				if best[c-1][i] == negInf || pinnedBetween[i][j] || items[j].time-items[i].time < minBreakGap {
+				if best[c-1][i] == negInf || pinnedBetween[i][j] || items[j].time-items[i].time < minGap {
 					continue
 				}
 				if value := best[c-1][i] + items[j].score - gapCost(items[j].time-items[i].time); value > best[c][j] {
@@ -139,8 +143,11 @@ func solveSpacing(items []optItem, k int, duration float64) ([]int, bool) {
 }
 
 func optimizeBreaks(transcript *Transcript, request OptimizeRequest) (OptimizeResult, error) {
+	return optimizeBreaksWithLimits(transcript, request, minBreakGap, maxBreakCount(transcript.Duration))
+}
+
+func optimizeBreaksWithLimits(transcript *Transcript, request OptimizeRequest, minGap float64, maxK int) (OptimizeResult, error) {
 	duration := transcript.Duration
-	maxK := maxBreakCount(duration)
 	result := OptimizeResult{MaxK: maxK, Selected: []OptimizedBreak{}, Outcomes: []CandidateOutcome{}}
 	pins := append([]float64(nil), request.Pinned...)
 	sort.Float64s(pins)
@@ -148,8 +155,8 @@ func optimizeBreaks(transcript *Transcript, request OptimizeRequest) (OptimizeRe
 		if math.IsNaN(at) || math.IsInf(at, 0) || at < minLeadSeconds || at > duration-minTailSeconds {
 			return result, errors.New("each reviewer placement must leave 15 seconds at the start and 10 at the end")
 		}
-		if i > 0 && at-pins[i-1] < minBreakGap {
-			return result, fmt.Errorf("reviewer placements must be at least %.0f seconds apart", minBreakGap)
+		if i > 0 && at-pins[i-1] < minGap {
+			return result, fmt.Errorf("reviewer placements must be at least %.0f seconds apart", minGap)
 		}
 	}
 	if len(pins) > maxK {
@@ -182,7 +189,7 @@ func optimizeBreaks(transcript *Transcript, request OptimizeRequest) (OptimizeRe
 	}
 	strong, all := pool(false), pool(true)
 	for k := maxK; k >= len(pins); k-- {
-		if _, ok := solveSpacing(strong, k, duration); ok {
+		if _, ok := solveSpacingWithGap(strong, k, duration, minGap); ok {
 			result.AutoK = k
 			break
 		}
@@ -193,18 +200,18 @@ func optimizeBreaks(transcript *Transcript, request OptimizeRequest) (OptimizeRe
 	}
 	items, picked, ok := strong, []int(nil), false
 	for ; k >= len(pins); k-- {
-		if picked, ok = solveSpacing(strong, k, duration); ok {
+		if picked, ok = solveSpacingWithGap(strong, k, duration, minGap); ok {
 			items = strong
 			break
 		}
-		if picked, ok = solveSpacing(all, k, duration); ok {
+		if picked, ok = solveSpacingWithGap(all, k, duration, minGap); ok {
 			items = all
 			break
 		}
 	}
 	if !ok {
 		k, items, picked = len(pins), all, nil
-		picked, _ = solveSpacing(all, k, duration)
+		picked, _ = solveSpacingWithGap(all, k, duration, minGap)
 	}
 	result.K = k
 	if k > 0 {
@@ -248,7 +255,7 @@ func optimizeBreaks(transcript *Transcript, request OptimizeRequest) (OptimizeRe
 			}
 			outcome.Note = joinSentences(messages)
 		default:
-			outcome.Status, outcome.Note = "available", unselectedNote(candidate, result.Selected, k)
+			outcome.Status, outcome.Note = "available", unselectedNoteWithGap(candidate, result.Selected, k, minGap)
 		}
 		result.Outcomes = append(result.Outcomes, outcome)
 	}
@@ -256,7 +263,7 @@ func optimizeBreaks(transcript *Transcript, request OptimizeRequest) (OptimizeRe
 	case k == 0 && result.AutoK == 0:
 		result.Message = "No moment is safe and ad-friendly enough for a break; the programme plays without ads."
 	case request.K != nil && *request.K > k:
-		result.Message = fmt.Sprintf("Only %d break(s) fit the %s minimum gap with the available moments.", k, clockLabel(minBreakGap))
+		result.Message = fmt.Sprintf("Only %d break(s) fit the %s minimum gap with the available moments.", k, clockLabel(minGap))
 	case k == 1:
 		result.Message = fmt.Sprintf("1 break at %s; the system recommends %d of at most %d.",
 			clockLabel(result.Selected[0].Time), result.AutoK, maxK)
@@ -276,9 +283,13 @@ func optimizeBreaks(transcript *Transcript, request OptimizeRequest) (OptimizeRe
 }
 
 func unselectedNote(candidate *BreakCandidate, selected []OptimizedBreak, k int) string {
+	return unselectedNoteWithGap(candidate, selected, k, minBreakGap)
+}
+
+func unselectedNoteWithGap(candidate *BreakCandidate, selected []OptimizedBreak, k int, minGap float64) string {
 	for _, entry := range selected {
 		distance := math.Abs(entry.Time - candidate.Time)
-		if distance >= minBreakGap {
+		if distance >= minGap {
 			continue
 		}
 		if entry.Source == "manual" {
@@ -338,4 +349,47 @@ func (s *server) optimizePlacements(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+// simulatePolicy reuses AI evidence but does not mutate the review or published manifest.
+// Scene safety decisions remain fixed; only pacing and ad-load business limits vary.
+func (s *server) simulatePolicy(w http.ResponseWriter, r *http.Request) {
+	job, ok := s.getJobSnapshot(r.PathValue("id"))
+	if !ok {
+		writeError(w, http.StatusNotFound, "Analysis job not found.")
+		return
+	}
+	if job.Transcript == nil || job.Status != "completed" {
+		writeError(w, http.StatusConflict, "Simulation needs a completed analysis.")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<10)
+	defer r.Body.Close()
+	var request struct {
+		MinGapSeconds float64 `json:"min_gap_seconds"`
+		BreaksPerHour int     `json:"max_breaks_per_hour"`
+		AdLoadPercent float64 `json:"max_ad_load_percent"`
+	}
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&request); err != nil || request.MinGapSeconds < 120 || request.MinGapSeconds > 900 ||
+		request.BreaksPerHour < 1 || request.BreaksPerHour > 12 || request.AdLoadPercent < 1 || request.AdLoadPercent > 30 {
+		writeError(w, http.StatusBadRequest, "Use 120–900 seconds gap, 1–12 breaks/hour, and 1–30% ad load.")
+		return
+	}
+	baseline, err := optimizeBreaks(job.Transcript, OptimizeRequest{})
+	if err != nil {
+		writeError(w, http.StatusUnprocessableEntity, err.Error())
+		return
+	}
+	maxK := maxBreakCountWithLimits(job.Transcript.Duration, request.MinGapSeconds, request.BreaksPerHour, request.AdLoadPercent/100)
+	scenario, err := optimizeBreaksWithLimits(job.Transcript, OptimizeRequest{}, request.MinGapSeconds, maxK)
+	if err != nil {
+		writeError(w, http.StatusUnprocessableEntity, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"baseline": baseline, "scenario": scenario, "limits": request,
+		"note": "Preview only: AI scene-safety decisions stay unchanged. This does not alter the review, playback policy, or manifest.",
+	})
 }

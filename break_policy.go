@@ -175,15 +175,19 @@ func addReason(candidate *BreakCandidate, code, message string) {
 
 // maxBreakCount bounds k by breaks per hour, planned ad load, and how many minimum gaps fit.
 func maxBreakCount(duration float64) int {
+	return maxBreakCountWithLimits(duration, minBreakGap, maxBreaksPerHour, maxAdLoad)
+}
+
+func maxBreakCountWithLimits(duration, gap float64, hourly int, load float64) int {
 	usable := duration - minLeadSeconds - minTailSeconds
 	if usable < 0 {
 		return 0
 	}
-	count := int(math.Ceil(duration / 3600 * maxBreaksPerHour))
-	if byLoad := int(math.Floor(maxAdLoad * duration / ((1 - maxAdLoad) * plannedAdSeconds))); byLoad < count {
+	count := int(math.Ceil(duration / 3600 * float64(hourly)))
+	if byLoad := int(math.Floor(load * duration / ((1 - load) * plannedAdSeconds))); byLoad < count {
 		count = byLoad
 	}
-	if byGap := int(math.Floor(usable/minBreakGap)) + 1; byGap < count {
+	if byGap := int(math.Floor(usable/gap)) + 1; byGap < count {
 		count = byGap
 	}
 	return max(count, 0)
