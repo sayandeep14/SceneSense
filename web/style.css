@@ -539,3 +539,11 @@ h1 { margin: 17px 0 8px; font-family: var(--display); font-size: clamp(32px, 3.4
 .timeline-lanes-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 4px; color: #a0a79e; font: 8px var(--mono); letter-spacing: .04em; text-transform: uppercase; }
 .timeline-lanes-legend span::before { margin-right: 4px; content: "↑"; }
 .break-pacing { margin: 0 0 5px; color: #80409f; font-size: 9px; }
+.policy-simulator { margin: 18px 0; padding: 14px; border: 1px solid rgba(255,255,255,.13); border-radius: 12px; background: rgba(255,255,255,.035); }
+.policy-simulator summary { cursor: pointer; font-weight: 700; }
+.policy-simulator p, .sim-result { font-size: 13px; line-height: 1.5; }
+.simulator-controls { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin: 14px 0; }
+.simulator-controls label { display: grid; gap: 6px; font-size: 12px; }
+.simulator-controls output { font-weight: 700; }
+.simulator-controls input { width: 100%; }
+.sim-result button { margin: 4px 6px 4px 0; }

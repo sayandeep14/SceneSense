@@ -18,6 +18,60 @@
   let dialogRequest = 0;
   const pollingJobs = new Set();
   const cutDialog = document.querySelector("#cut-dialog");
+  const simulator = document.querySelector("#policy-simulator");
+  let simulatorTimer;
+  let simulatorRequest = 0;
+  async function simulatePolicy() {
+    const result = document.querySelector("#sim-result");
+    if (!activeJob?.transcript || activeJob.status !== "completed") return;
+    const jobId = activeJob.id;
+    const request = ++simulatorRequest;
+    const gap = Number(document.querySelector("#sim-gap").value);
+    const hourly = Number(document.querySelector("#sim-hourly").value);
+    const load = Number(document.querySelector("#sim-load").value);
+    document.querySelector("#sim-gap-value").textContent = `${gap / 60} min`;
+    document.querySelector("#sim-hourly-value").textContent = String(hourly);
+    document.querySelector("#sim-load-value").textContent = `${load}%`;
+    result.textContent = "Recomputing over saved AI evidence…";
+    try {
+      const response = await fetch(`/api/jobs/${encodeURIComponent(jobId)}/simulate`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ min_gap_seconds: gap, max_breaks_per_hour: hourly, max_ad_load_percent: load }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Simulation is unavailable.");
+      if (request !== simulatorRequest || activeJob?.id !== jobId) return;
+      result.replaceChildren();
+      const baseline = document.createElement("p");
+      baseline.textContent = `Current policy: ${data.baseline.k} AI breaks · ${data.baseline.selected.map((item) => formatDuration(item.time)).join(", ") || "none"}`;
+      const scenario = document.createElement("p");
+      scenario.textContent = `What-if policy: ${data.scenario.k} AI breaks · ${data.scenario.selected.map((item) => formatDuration(item.time)).join(", ") || "none"}`;
+      const delta = document.createElement("p");
+      delta.textContent = data.scenario.k > data.baseline.k ? `${data.scenario.k - data.baseline.k} more safe breaks fit.`
+        : data.scenario.k < data.baseline.k ? `${data.baseline.k - data.scenario.k} fewer breaks fit.` : "The number of safe breaks stays the same; their positions may change.";
+      result.append(baseline, scenario, delta);
+      for (const item of data.scenario.selected) {
+        const seek = document.createElement("button");
+        seek.type = "button";
+        seek.className = "outline-button";
+        seek.textContent = `Seek ${formatDuration(item.time)}`;
+        seek.addEventListener("click", () => { const video = document.querySelector("#video-preview"); video.currentTime = item.time; video.scrollIntoView({ block: "center", behavior: "smooth" }); });
+        result.append(seek);
+      }
+      const note = document.createElement("p");
+      note.textContent = data.note;
+      result.append(note);
+    } catch (error) {
+      if (request === simulatorRequest) result.textContent = error.message || "Simulation is unavailable.";
+    }
+  }
+  simulator.addEventListener("toggle", () => { if (simulator.open) simulatePolicy(); });
+  for (const id of ["sim-gap", "sim-hourly", "sim-load"]) {
+    document.querySelector(`#${id}`).addEventListener("input", () => {
+      window.clearTimeout(simulatorTimer);
+      simulatorTimer = window.setTimeout(simulatePolicy, 180);
+    });
+  }
 
   const formatDuration = (seconds) => {
     const total = Math.max(0, Math.floor(seconds));
