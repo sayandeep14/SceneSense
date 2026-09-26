@@ -539,3 +539,6 @@ h1 { margin: 17px 0 8px; font-family: var(--display); font-size: clamp(32px, 3.4
 .timeline-lanes-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 4px; color: #a0a79e; font: 8px var(--mono); letter-spacing: .04em; text-transform: uppercase; }
 .timeline-lanes-legend span::before { margin-right: 4px; content: "↑"; }
 .break-pacing { margin: 0 0 5px; color: #80409f; font-size: 9px; }
+.observer-panel { display: grid; gap: 12px; }
+.observer-report { font-size: 12px; line-height: 1.5; color: #a6adbb; }
+.observer-report .observer-metric { padding: 6px 0; border-bottom: 1px solid rgba(255,255,255,.08); }
