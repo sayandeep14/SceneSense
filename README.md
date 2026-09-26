@@ -30,6 +30,8 @@ The pipeline compresses the video before any expensive model sees it, then narro
 7. **Policy and k.** The Go policy blocks speech across the cut, tense moments, unfinished dialogue, sensitive or uncertain context, and the programme edges. A dynamic-programming optimiser then picks exactly `k` breaks, at least 5 minutes apart, maximising ad-friendliness while spreading the breaks evenly. It recommends `k` from the High and Medium spots (at most 8 per hour and 20% ad load) and explains every choice.
 8. **Human review and finalize.** The dashboard shows the n → m → k funnel on a zoomable timeline (−/+/Fit, keyboard +/−/0, or Ctrl/⌘ + scroll), which zooms around the playhead, with a time ruler and scene bands. Reviewers can change `k`, remove or force-include spots, place breaks anywhere, choose ads and viewer options, and **Finalize**. That writes a versioned OTT manifest (`/api/jobs/{id}/manifest.json`, schema at `/schema/ad-manifest-v1.json`) alongside VMAP/VAST. The review is saved on the server; editing after finalizing marks it as a draft until you finalize again.
 
+The policy sidebar updates with the selected break count, closest spacing, programme edge time, and ad-load calculation. It uses each chosen creative's duration and labels any still-unselected duration as an estimate; Finalize rechecks the limits and brand safety on the server.
+
 `python ai/synthetic_fixture.py out.mp4` builds a clip with known cuts, a fade, a dissolve, shot/reverse-shot, and camera motion; the tests use it as ground truth.
 
 ## Checks
