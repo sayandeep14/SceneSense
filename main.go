@@ -251,6 +251,7 @@ func (s *server) routes() http.Handler {
 	mux.HandleFunc("GET /api/brands", s.listBrands)
 	mux.HandleFunc("POST /api/ads", s.uploadAd)
 	mux.HandleFunc("GET /api/jobs/{id}/ad-suggestions", s.adSuggestions)
+	mux.HandleFunc("POST /api/jobs/{id}/balance-ads", s.balanceAdPlan)
 	mux.HandleFunc("POST /api/jobs", s.createJob)
 	mux.HandleFunc("POST /api/jobs/{id}/transcribe", s.retryTranscription)
 	mux.HandleFunc("POST /api/jobs/{id}/retry", s.retryPhase)
