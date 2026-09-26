@@ -552,3 +552,20 @@ h1 { margin: 17px 0 8px; font-family: var(--display); font-size: clamp(32px, 3.4
 .observer-panel { display: grid; gap: 12px; }
 .observer-report { font-size: 12px; line-height: 1.5; color: #a6adbb; }
 .observer-report .observer-metric { padding: 6px 0; border-bottom: 1px solid rgba(255,255,255,.08); }
+.mood-bumper-toggle { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; margin: 10px 0; font-size: 12px; cursor: pointer; }
+.mood-bumper-toggle span { opacity: .6; font-size: 11px; }
+.player-mood-bumper { position: absolute; inset: 0; z-index: 5; display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 12px; padding: 24px; text-align: center; color: #fff; background: radial-gradient(circle at 30% 25%, #5b4380 0, transparent 45%), linear-gradient(135deg,#16152c,#382744 60%,#171827); overflow: hidden; }
+.player-mood-bumper.hidden { display: none; }
+.player-mood-bumper::before { content: ""; position: absolute; width: 55%; aspect-ratio: 1; border: 1px solid rgba(255,255,255,.2); border-radius: 50%; box-shadow: 0 0 0 24px rgba(255,255,255,.025), 0 0 0 70px rgba(255,255,255,.02); animation: bumper-bloom 1.6s ease-out both; }
+.player-mood-bumper > * { position: relative; z-index: 1; }
+.player-mood-bumper[data-mood="warm"] { background: radial-gradient(circle at 35% 20%, #e88b53, transparent 48%), linear-gradient(135deg,#43213b,#8a4336 65%,#341e34); }
+.player-mood-bumper[data-mood="reflective"] { background: radial-gradient(circle at 35% 20%, #7aa9b3, transparent 48%), linear-gradient(135deg,#172f49,#344760 60%,#1a2742); }
+.bumper-kicker { letter-spacing: .24em; font-size: clamp(8px, 1vw, 11px); opacity: .78; }
+.bumper-symbol { font-size: clamp(28px, 5vw, 58px); color: #fff3d8; animation: bumper-appear 1.1s ease-out both; }
+.player-mood-bumper strong { font-size: clamp(24px, 4.5vw, 54px); line-height: 1.05; animation: bumper-appear 1.2s ease-out both; }
+.player-mood-bumper #bumper-subtitle { opacity: .8; font-size: clamp(10px, 1.3vw, 16px); }
+.is-bumper .player-video { visibility: hidden; }
+.is-bumper .player-controls { opacity: .35; pointer-events: none; }
+@keyframes bumper-bloom { from { transform: scale(.7); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+@keyframes bumper-appear { from { transform: translateY(12px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .player-mood-bumper::before, .bumper-symbol, .player-mood-bumper strong { animation: none; } }

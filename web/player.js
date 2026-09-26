@@ -7,6 +7,7 @@
   const stage = $("#player-stage");
   const programme = $("#player-programme");
   const ad = $("#player-ad");
+  const bumper = $("#player-mood-bumper");
   const adUI = $("#player-ad-ui");
   const upcoming = $("#player-upcoming");
   const skip = $("#player-skip");
@@ -151,12 +152,12 @@
     if (session.mode === "preview" && session.played.size && time >= session.endAt) finish();
   }
 
-  function startAd(item, resumeAt) {
-    session.active = item;
-    session.resumeAt = resumeAt;
-    programme.pause();
-    upcoming.classList.add("hidden");
-    hideEnd();
+  function beginCreative(item) {
+    if (!session || session.active !== item) return;
+    session.bumper = false;
+    session.bumperTimer = null;
+    bumper.classList.add("hidden");
+    shell.classList.remove("is-bumper");
     shell.classList.add("is-ad");
     adUI.classList.remove("hidden");
     paused.classList.add("hidden");
@@ -190,6 +191,28 @@
     renderRail();
     renderDots();
     syncToggle();
+  }
+
+  function startAd(item, resumeAt) {
+    session.active = item;
+    session.resumeAt = resumeAt;
+    programme.pause();
+    upcoming.classList.add("hidden");
+    hideEnd();
+    if (item.mood && ["warm", "reflective", "calm"].includes(item.mood)) {
+      session.bumper = true;
+      bumper.dataset.mood = item.mood;
+      $("#bumper-title").textContent = item.mood === "warm" ? "A warm moment" : item.mood === "reflective" ? "A moment to reflect" : "A quiet pause";
+      $("#bumper-subtitle").textContent = `Next: ${item.brandName} · an ad matched to the moment`;
+      bumper.classList.remove("hidden");
+      shell.classList.add("is-bumper");
+      caption.textContent = "Synthetic mood transition for the demo; the ad starts next.";
+      session.bumperTimer = window.setTimeout(() => beginCreative(item), 1700);
+      renderRail();
+      renderDots();
+      return;
+    }
+    beginCreative(item);
   }
 
   function updateAd() {
@@ -274,10 +297,11 @@
       startAt: Math.max(0, Number(options.startAt) || 0),
       endAt: Number(options.endAt) || duration,
       played: new Set(), outcomes: new Map(), clicked: new Set(),
-      active: null, resumeAt: 0, finished: false, adStarted: false,
+      active: null, resumeAt: 0, finished: false, adStarted: false, bumper: false, bumperTimer: null,
     };
     hideEnd();
-    shell.classList.remove("is-ad");
+    shell.classList.remove("is-ad", "is-bumper");
+    bumper.classList.add("hidden");
     adUI.classList.add("hidden");
     upcoming.classList.add("hidden");
     bigPlay.classList.add("hidden");
@@ -308,6 +332,9 @@
   }
 
   function teardown() {
+    if (session?.bumperTimer) window.clearTimeout(session.bumperTimer);
+    bumper.classList.add("hidden");
+    shell.classList.remove("is-bumper");
     programme.pause();
     ad.pause();
     if (ad.getAttribute("src")) {
@@ -318,7 +345,7 @@
   }
 
   function togglePlayback() {
-    if (!session || session.finished) return;
+    if (!session || session.finished || session.bumper) return;
     const video = activeVideo();
     bigPlay.classList.add("hidden");
     if (video.paused) video.play().catch(showBigPlay);
