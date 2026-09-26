@@ -82,6 +82,12 @@
                 </div>
                 <div class="asset-preview-wrap">
                   <video id="video-preview" class="asset-preview" controls playsinline></video>
+                  <div id="ad-preview-overlay" class="ad-preview-overlay hidden" aria-live="assertive">
+                    <div class="ad-preview-top"><span>DEMO AD · SYNTHETIC SLATE</span><span id="ad-countdown"></span></div>
+                    <video id="ad-preview" class="ad-preview" playsinline></video>
+                    <div class="ad-preview-brand"><span class="ad-preview-symbol">✳</span><strong id="ad-preview-title">Brand demo</strong><span id="ad-preview-file"></span><span id="ad-preview-time"></span><span id="ad-preview-context"></span></div>
+                    <button id="skip-demo-ad" class="outline-button" type="button">Skip demo ad</button>
+                  </div>
                   <div class="video-overlay-label"><span class="play-indicator">▶</span> SOURCE VIDEO</div>
                 </div>
                 <div class="asset-meta-row">
@@ -128,6 +134,15 @@
                   <div class="break-legend"><span><i class="legend-dot all-cuts"></i> All cuts</span><span><i class="legend-dot potential"></i> AI potential</span><span><i class="legend-dot accepted"></i> Selected</span><span><i class="legend-dot rejected"></i> Withheld</span></div>
                   <p id="break-empty" class="break-empty hidden"></p>
                   <ol id="break-list" class="break-list"></ol>
+                  <section id="playback-planner" class="playback-planner" aria-label="Ad playback plan">
+                    <div class="playback-planner-heading"><strong>Playback &amp; ad plan</strong><span>VMAP · local demo slate</span></div>
+                    <p class="playback-disclaimer">These black-screen placeholder MP4s are generated locally and served as static files. Ad videos and brand targeting / negative-context metadata are separate inputs; no real ad is served.</p>
+                    <div id="playback-break-config" class="playback-break-config"></div>
+                    <div class="playback-actions"><button id="build-vmap" class="outline-button" type="button" disabled>Build VMAP &amp; debug JSON</button><button id="play-programme" class="primary-button" type="button" disabled>▶ Play programme with breaks</button></div>
+                    <p id="playback-status" class="playback-status" role="status">Choose at least one marker and a safe catalogue creative.</p>
+                    <div id="playback-downloads" class="playback-downloads hidden"><a id="vmap-download" download>Download VMAP XML ↗</a><a id="debug-download" download>Download decision graph JSON ↗</a></div>
+                    <ol id="playback-event-list" class="playback-event-list" aria-label="Playback event log"></ol>
+                  </section>
                 </section>
                 <div class="phase-strip"><div class="phase-item phase-current"><span class="phase-check">✓</span><span>Media intake</span></div><span class="phase-connector"></span><div class="phase-item"><span class="phase-number">02</span><span>Scene & speech AI</span></div><span class="phase-connector"></span><div class="phase-item"><span class="phase-number">03</span><span>Safe ad moments</span></div><span class="phase-connector"></span><div class="phase-item"><span class="phase-number">04</span><span>Play & resume</span></div></div>
               </section>

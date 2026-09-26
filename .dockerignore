@@ -7,6 +7,7 @@ tmp
 *.mov
 **/*.mp4
 **/*.mov
+!assets/ads/**
 .env*
 !.env.example
 __pycache__/

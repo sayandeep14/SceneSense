@@ -4,7 +4,7 @@ An AI-first contextual ad placement MVP for Bengali video. This repository is be
 
 ## Current release
 
-**Phases 0–3 are deployed; Phase 4 scene continuity, brand fit, and reviewer placement controls are in implementation.** Go handles uploads, jobs, and deterministic policy. The Python worker supports Bengali ASR via Sarvam Saaras v4 or Groq Whisper, detects low-audio intervals and shot cuts, and asks OpenAI for structured scene evidence and break naturalness scores. A Go policy rejects breaks during speech, uncertain or sensitive scenes, and unfinished thoughts, and enforces pacing and ad-load limits. The UI shows accepted and withheld moments with seekable markers and exact reasons; a saved analysis can be opened with `?job=<id>`. The hosted positive selection was verified on a constructed two-scene test fixture; the tested unmodified real excerpts had no eligible break and were correctly withheld.
+**Phases 0–4 are deployed; Phase 5 VMAP and ad playback is in implementation.** Go handles uploads, jobs, and deterministic policy. The Python worker supports Bengali ASR via Sarvam Saaras v4 or Groq Whisper, detects low-audio intervals and shot cuts, and asks OpenAI for structured scene evidence and break naturalness scores. A Go policy rejects breaks during speech, uncertain or sensitive scenes, and unfinished thoughts, and enforces pacing and ad-load limits. The UI shows accepted and withheld moments with seekable markers and exact reasons; a saved analysis can be opened with `?job=<id>`. The hosted positive selection was verified on a constructed two-scene test fixture; the tested unmodified real excerpts had no eligible break and were correctly withheld.
 
 ## Run locally
 
@@ -17,6 +17,8 @@ make run
 `make run` loads the ignored `.env` file in the project root and starts the Go app. Set `ASR_PROVIDER=groq` (default) with `GROQ_API_KEY`, or `ASR_PROVIDER=sarvam` with `SARVAM_API_KEY` for Saaras v4 Bengali transcription. Sarvam REST requests use mono 16 kHz WAV chunks of at most 25 seconds; its transcript timestamps are phrase-level. Set `OPENAI_API_KEY` for scene understanding and break scoring; optionally set `OPENAI_VISION_MODEL` and `OPENAI_BREAK_MODEL` (both default to `gpt-4o-mini`). Never commit or share these keys. Set `DEMO_ACCESS_PASSWORD` to enable the demo's HTTP Basic Auth gate (username `demo`); Railway deployments refuse to start if it is missing. `/healthz` remains available to the platform healthcheck. Without the selected ASR provider's key, uploads stop after media intake. Without OpenAI, successful transcripts are retained and the UI reports that scene analysis is unavailable. Open [http://localhost:8080](http://localhost:8080) and upload an MP4 with an audio track. Videos and private JSON job artifacts are kept in `data/uploads`.
 
 Set `ADDR` to change the listen address and `UPLOAD_DIR` to change the upload directory.
+
+The demo ad MP4s are generated on a developer machine and stored at the creative URLs in `assets/brands.json`; the server only serves those static files. Generate them with `go run ./cmd/generate-demo-ads` (requires `rsvg-convert` and FFmpeg). The default slate time and mood are sample annotations; pass `-time` and `-mood` to change them, and use `-force` only when you intend to replace the local files. Brand targeting and negative-context metadata remain separate catalogue data, not video content.
 
 ## Checks
 

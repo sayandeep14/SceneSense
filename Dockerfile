@@ -14,7 +14,7 @@ RUN apk add --no-cache ca-certificates ffmpeg python3 \
 WORKDIR /app
 COPY --from=build --chown=app:app /out/contextual-ad-lab ./contextual-ad-lab
 COPY --chown=app:app ai/ ./ai/
-COPY --chown=app:app assets/brands.json ./assets/brands.json
+COPY --chown=app:app assets/ ./assets/
 ENV ADDR=:8080
 ENV UPLOAD_DIR=/app/data/uploads
 ENV PYTHON_BIN=python3

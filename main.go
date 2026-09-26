@@ -46,18 +46,20 @@ type MediaInfo struct {
 }
 
 type Job struct {
-	ID          string      `json:"id"`
-	FileName    string      `json:"fileName"`
-	FileSize    int64       `json:"fileSize"`
-	Status      string      `json:"status"`
-	Stage       string      `json:"stage"`
-	Progress    int         `json:"progress"`
-	CreatedAt   time.Time   `json:"createdAt"`
-	ContentHash string      `json:"contentHash"`
-	Media       MediaInfo   `json:"media"`
-	VideoURL    string      `json:"videoUrl"`
-	Message     string      `json:"message"`
-	Transcript  *Transcript `json:"transcript,omitempty"`
+	ID             string          `json:"id"`
+	FileName       string          `json:"fileName"`
+	FileSize       int64           `json:"fileSize"`
+	Status         string          `json:"status"`
+	Stage          string          `json:"stage"`
+	Progress       int             `json:"progress"`
+	CreatedAt      time.Time       `json:"createdAt"`
+	ContentHash    string          `json:"contentHash"`
+	Media          MediaInfo       `json:"media"`
+	VideoURL       string          `json:"videoUrl"`
+	Message        string          `json:"message"`
+	Transcript     *Transcript     `json:"transcript,omitempty"`
+	PlaybackPlan   *PlaybackPlan   `json:"playback_plan,omitempty"`
+	PlaybackEvents []PlaybackEvent `json:"playback_events,omitempty"`
 }
 
 type server struct {
@@ -221,8 +223,15 @@ func (s *server) routes() http.Handler {
 	}
 	mux.HandleFunc("GET /healthz", s.health)
 	mux.HandleFunc("GET /api/jobs", s.listJobs)
+	mux.HandleFunc("GET /api/brands", s.listBrands)
 	mux.HandleFunc("POST /api/jobs", s.createJob)
 	mux.HandleFunc("POST /api/jobs/{id}/transcribe", s.retryTranscription)
+	mux.HandleFunc("POST /api/jobs/{id}/playback-plan", s.createPlaybackPlan)
+	mux.HandleFunc("GET /api/jobs/{id}/vmap.xml", s.getVMAP)
+	mux.HandleFunc("GET /api/jobs/{id}/vast/{breakID}", s.getVAST)
+	mux.HandleFunc("GET /api/jobs/{id}/debug.json", s.getPlaybackDebug)
+	mux.HandleFunc("POST /api/jobs/{id}/playback-events", s.recordPlaybackEvent)
+	mux.HandleFunc("GET /ads/{brandID}/{file}", s.serveCatalogCreative)
 	mux.HandleFunc("GET /api/jobs/{id}", s.getJob)
 	mux.HandleFunc("GET /media/{id}", s.getMedia)
 	mux.Handle("GET /", http.FileServer(http.FS(webRoot)))
@@ -434,14 +443,19 @@ func (s *server) createJob(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) getJob(w http.ResponseWriter, r *http.Request) {
-	s.jobsMu.RLock()
-	job, exists := s.jobs[r.PathValue("id")]
-	s.jobsMu.RUnlock()
+	job, exists := s.getJobSnapshot(r.PathValue("id"))
 	if !exists {
 		writeError(w, http.StatusNotFound, "Analysis job not found.")
 		return
 	}
 	writeJSON(w, http.StatusOK, job)
+}
+
+func (s *server) getJobSnapshot(id string) (Job, bool) {
+	s.jobsMu.RLock()
+	job, exists := s.jobs[id]
+	s.jobsMu.RUnlock()
+	return job, exists
 }
 
 func (s *server) getMedia(w http.ResponseWriter, r *http.Request) {

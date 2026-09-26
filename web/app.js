@@ -11,6 +11,13 @@
   const toast = document.querySelector("#toast");
   let activeRequest = null;
   let toastTimer = null;
+  let activeJob = null;
+  let catalogBrands = [];
+  let playbackPlan = null;
+  let activePlaybackBreak = null;
+  let playbackAdStarted = false;
+  let adFailureHandled = false;
+  const playedBreaks = new Set();
   const pollingJobs = new Set();
 
   const formatDuration = (seconds) => {
@@ -88,6 +95,217 @@
     return scene?.brand_matches || [];
   }
 
+  function renderPlaybackPlanner(job, state, persist) {
+    const rows = document.querySelector("#playback-break-config");
+    const build = document.querySelector("#build-vmap");
+    const play = document.querySelector("#play-programme");
+    const status = document.querySelector("#playback-status");
+    rows.replaceChildren();
+    if (playbackPlan && (playbackPlan.breaks.length !== state.selected.length || playbackPlan.breaks.some((planned, index) => {
+      const selected = state.selected[index];
+      return !selected || Math.abs(planned.time - selected.time) > 0.001 || planned.brand_id !== selected.brandId || planned.creative_id !== selected.creativeId;
+    }))) {
+      playbackPlan = null;
+      if (activeJob?.id === job.id) activeJob.playback_plan = null;
+    }
+    build.disabled = !state.selected.length || !catalogBrands.length;
+    play.disabled = !playbackPlan?.breaks?.length;
+    if (playbackPlan?.breaks?.length) {
+      document.querySelector("#vmap-download").href = playbackPlan.vmap_url;
+      document.querySelector("#debug-download").href = playbackPlan.debug_url;
+      document.querySelector("#playback-downloads").classList.remove("hidden");
+    } else {
+      document.querySelector("#playback-downloads").classList.add("hidden");
+    }
+    if (!catalogBrands.length) {
+      status.textContent = "Loading the synthetic brand catalogue…";
+      return;
+    }
+    if (!state.selected.length) {
+      status.textContent = "Add or select a break marker first. Local placeholder MP4s show a sample filename, time, and mood; the overlay shows this marker's actual scene context.";
+      return;
+    }
+    let allRowsSafe = true;
+    for (const [index, item] of state.selected.entries()) {
+      const row = document.createElement("div");
+      row.className = "playback-break-row";
+      const label = document.createElement("strong");
+      label.className = "playback-break-label";
+      label.textContent = `${formatDuration(item.time)} · ${item.source === "manual" ? "manual" : "AI"}`;
+      const brandLabel = document.createElement("label");
+      brandLabel.textContent = "Brand";
+      const brandSelect = document.createElement("select");
+      brandSelect.setAttribute("aria-label", `Brand for break at ${formatDuration(item.time)}`);
+      const matches = precedingSceneBrandMatches(job.transcript, item.time);
+      const matchByID = new Map(matches.map((match) => [match.brand_id, match]));
+      const safeBrands = catalogBrands.filter((brand) => matchByID.has(brand.brand_id) && !matchByID.get(brand.brand_id).blocked);
+      const candidate = (job.transcript.break_candidates || []).find((entry) => Math.abs(entry.time - item.time) < 0.5);
+      const aiBrand = candidate?.brand_recommendations?.find((match) => !match.blocked)?.brand_id;
+      if (!item.brandId) item.brandId = safeBrands.some((brand) => brand.brand_id === aiBrand)
+        ? aiBrand : safeBrands[0]?.brand_id || "";
+      const placeholder = document.createElement("option");
+      placeholder.value = "";
+      placeholder.textContent = "Choose a safe brand";
+      brandSelect.append(placeholder);
+      for (const brand of catalogBrands) {
+        const option = document.createElement("option");
+        option.value = brand.brand_id;
+        const fit = matchByID.get(brand.brand_id);
+        option.disabled = !fit || fit.blocked;
+        option.textContent = `${brand.display_name}${fit?.recommended ? ` · AI fit ${Math.round(fit.fit_score * 100)}%` : fit?.blocked ? " · blocked by scene" : fit ? " · reviewer choice" : " · no scene evidence"}`;
+        brandSelect.append(option);
+      }
+      brandSelect.value = item.brandId;
+      if (!item.brandId || !safeBrands.some((brand) => brand.brand_id === item.brandId)) allRowsSafe = false;
+      brandSelect.onchange = () => {
+        item.brandId = brandSelect.value;
+        const brand = catalogBrands.find((entry) => entry.brand_id === item.brandId);
+        item.creativeId = brand?.creatives.find((creative) => creative.duration_sec === 15)?.id || brand?.creatives[0]?.id || "";
+        persist();
+        renderPlaybackPlanner(job, state, persist);
+      };
+      brandLabel.append(brandSelect);
+      const creativeLabel = document.createElement("label");
+      creativeLabel.textContent = "Catalogue creative · demo slate";
+      const creativeSelect = document.createElement("select");
+      creativeSelect.setAttribute("aria-label", `Creative for break at ${formatDuration(item.time)}`);
+      const brand = catalogBrands.find((entry) => entry.brand_id === item.brandId);
+      for (const creative of brand?.creatives || []) {
+        const option = document.createElement("option");
+        option.value = creative.id;
+        option.textContent = `${creative.url.split("/").at(-1)} · ${creative.duration_sec}s · ${creative.language}`;
+        creativeSelect.append(option);
+      }
+      if (!item.creativeId || !(brand?.creatives || []).some((creative) => creative.id === item.creativeId)) {
+        item.creativeId = brand?.creatives.find((creative) => creative.duration_sec === 15)?.id || brand?.creatives[0]?.id || "";
+      }
+      creativeSelect.value = item.creativeId;
+      creativeSelect.disabled = !brand;
+      creativeSelect.onchange = () => {
+        item.creativeId = creativeSelect.value;
+        persist();
+        document.querySelector("#playback-status").textContent = "Creative changed. Build the VMAP again to update the playback plan.";
+        document.querySelector("#play-programme").disabled = true;
+      };
+      creativeLabel.append(creativeSelect);
+      row.append(label, brandLabel, creativeLabel);
+      rows.append(row);
+    }
+    build.disabled = !allRowsSafe;
+    if (!allRowsSafe) {
+      status.textContent = "Choose a brand with clear, non-blocked scene evidence for every marker. If all are blocked or uncertain, playback stays fail-closed.";
+    } else if (playbackPlan?.breaks?.length === state.selected.length) {
+      status.textContent = "VMAP ready. Play to pause at each marker, show its local placeholder creative, then resume the programme.";
+    } else {
+      status.textContent = "Brand fit and creative duration are checked again by the server when you build the VMAP.";
+    }
+    build.onclick = async () => {
+      build.disabled = true;
+      status.textContent = "Validating creative safety, break spacing, and actual ad-load…";
+      try {
+        const response = await fetch(`/api/jobs/${encodeURIComponent(job.id)}/playback-plan`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ breaks: state.selected.map((selection) => ({
+            time: selection.time, source: selection.source, brand_id: selection.brandId, creative_id: selection.creativeId,
+          })) }),
+        });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || "The playback plan could not be validated.");
+        playbackPlan = payload.plan;
+        activeJob.playback_plan = playbackPlan;
+        playedBreaks.clear();
+        document.querySelector("#vmap-download").href = playbackPlan.vmap_url;
+        document.querySelector("#debug-download").href = playbackPlan.debug_url;
+        document.querySelector("#playback-downloads").classList.remove("hidden");
+        document.querySelector("#play-programme").disabled = playbackPlan.breaks.length === 0;
+        renderPlaybackEventHistory([]);
+        status.textContent = `${payload.break_count} VMAP break${payload.break_count === 1 ? "" : "s"} validated. The XML uses catalogue creative IDs and locally generated placeholder media.`;
+      } catch (error) {
+        showToast(error.message || "Could not create the playback plan.");
+        status.textContent = error.message || "Could not create the playback plan.";
+        build.disabled = false;
+      }
+    };
+    play.onclick = () => startProgrammeWithAds(job);
+  }
+
+  function renderPlaybackEventHistory(events) {
+    const list = document.querySelector("#playback-event-list");
+    list.replaceChildren();
+    for (const event of events.slice(-16)) {
+      const item = document.createElement("li");
+      item.textContent = `${event.event.replaceAll("_", " ")} · ${formatDuration(event.programme_time_sec)}`;
+      list.append(item);
+    }
+  }
+
+  async function recordPlaybackEvent(event, item, detail = "") {
+    const entry = { event, break_id: item.break_id, programme_time_sec: item.time, detail };
+    const list = document.querySelector("#playback-event-list");
+    const row = document.createElement("li");
+    row.textContent = `${event.replaceAll("_", " ")} · ${formatDuration(item.time)}`;
+    list.append(row);
+    while (list.children.length > 16) list.firstElementChild.remove();
+    try {
+      await fetch(`/api/jobs/${encodeURIComponent(activeJob.id)}/playback-events`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(entry),
+      });
+    } catch { /* Event persistence is best-effort; playback remains local and fail-safe. */ }
+  }
+
+  function startProgrammeWithAds(job) {
+    if (!playbackPlan?.breaks?.length || !job?.id) return;
+    const video = document.querySelector("#video-preview");
+    playedBreaks.clear();
+    activePlaybackBreak = null;
+    playbackAdStarted = false;
+    renderPlaybackEventHistory([]);
+    video.currentTime = 0;
+    video.play().catch(() => showToast("Press play on the programme player to start the demo."));
+  }
+
+  async function playScheduledBreak(item) {
+    if (activePlaybackBreak || playedBreaks.has(item.break_id)) return;
+    const video = document.querySelector("#video-preview");
+    const ad = document.querySelector("#ad-preview");
+    activePlaybackBreak = item;
+    playbackAdStarted = false;
+    adFailureHandled = false;
+    playedBreaks.add(item.break_id);
+    video.pause();
+    video.currentTime = item.time;
+    document.querySelector("#ad-preview-title").textContent = item.brand_name;
+    document.querySelector("#ad-preview-file").textContent = `Creative file: ${item.source_filename}`;
+    document.querySelector("#ad-preview-time").textContent = `Insertion point: ${formatDuration(item.time)} · ${item.duration_sec}s`;
+    document.querySelector("#ad-preview-context").textContent = `Annotated preceding-scene mood: ${item.preceding_scene_mood || "unclear"} · ${item.preceding_scene_context || "No scene summary"}`;
+    document.querySelector("#ad-countdown").textContent = `${item.duration_sec}s`;
+    document.querySelector("#ad-preview-overlay").classList.remove("hidden");
+    await recordPlaybackEvent("break_start", item);
+    ad.src = item.creative_url;
+    ad.load();
+    ad.play().catch(async (error) => {
+      if (!activePlaybackBreak || adFailureHandled) return;
+      adFailureHandled = true;
+      await recordPlaybackEvent("error", item, "synthetic creative failed to start");
+      await recordPlaybackEvent("skip", item, error?.message || "ad playback failed; fail open to programme");
+      resumeProgramme(item);
+    });
+  }
+
+  function resumeProgramme(item) {
+    const video = document.querySelector("#video-preview");
+    const ad = document.querySelector("#ad-preview");
+    document.querySelector("#ad-preview-overlay").classList.add("hidden");
+    ad.pause();
+    activePlaybackBreak = null;
+    playbackAdStarted = false;
+    video.currentTime = item.time;
+    video.play().then(() => recordPlaybackEvent("resume", item)).catch(() => {
+      recordPlaybackEvent("error", item, "programme could not resume automatically");
+      showToast("Ad finished. Press play to continue the programme.");
+    });
+  }
+
   const humanSize = (bytes) => {
     if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
     return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
@@ -124,6 +342,13 @@
   }
 
   function showJob(job, { notify = false, poll = true } = {}) {
+    if (activeJob?.id !== job.id) {
+      playbackPlan = null;
+      activePlaybackBreak = null;
+      playedBreaks.clear();
+    }
+    activeJob = job;
+    if (job.playback_plan) playbackPlan = job.playback_plan;
     progressPanel.classList.add("hidden");
     errorPanel.classList.add("hidden");
     dropzone.classList.add("hidden");
@@ -139,6 +364,7 @@
     renderTranscript(job);
     renderSceneEvidence(job);
     renderBreakDecisions(job);
+    renderPlaybackEventHistory(job.playback_events || []);
 
     const video = document.querySelector("#video-preview");
     if (video.getAttribute("src") !== job.videoUrl) {
@@ -392,7 +618,13 @@
     const potentials = candidates.filter((item) => item.potential ||
       (item.potential === undefined && item.decision === "accepted"));
     const { key, state } = loadBreakSelection(job.id, candidates, maxCount, duration, policy);
-    const persist = () => saveBreakSelection(key, state);
+    const persist = () => {
+      saveBreakSelection(key, state);
+      playbackPlan = null;
+      if (activeJob?.id === job.id) activeJob.playback_plan = null;
+      document.querySelector("#playback-downloads").classList.add("hidden");
+      document.querySelector("#play-programme").disabled = true;
+    };
     const seek = document.querySelector("#review-seek");
     seek.max = String(duration);
     seek.value = String(video.currentTime || 0);
@@ -589,6 +821,7 @@
       card.append(header, note, brandFit, remove);
       list.append(card);
     }
+    renderPlaybackPlanner(job, state, persist);
   }
 
   async function watchJob(jobId) {
@@ -750,14 +983,56 @@
   dropzone.addEventListener("drop", (event) => uploadFile(event.dataTransfer?.files?.[0]));
 
   const previewVideo = document.querySelector("#video-preview");
+  const adPreview = document.querySelector("#ad-preview");
   const reviewSeek = document.querySelector("#review-seek");
   const reviewTime = document.querySelector("#review-time");
   previewVideo.addEventListener("timeupdate", () => {
     reviewSeek.value = String(previewVideo.currentTime || 0);
     reviewTime.value = formatDuration(previewVideo.currentTime || 0);
+    if (!playbackPlan || previewVideo.paused || activePlaybackBreak) return;
+    const due = playbackPlan.breaks.find((item) => !playedBreaks.has(item.break_id) && previewVideo.currentTime >= item.time);
+    if (due) playScheduledBreak(due);
   });
   previewVideo.addEventListener("loadedmetadata", () => {
     reviewSeek.max = String(previewVideo.duration || 0);
+  });
+  adPreview.addEventListener("playing", () => {
+    if (activePlaybackBreak && !playbackAdStarted) {
+      playbackAdStarted = true;
+      recordPlaybackEvent("ad_start", activePlaybackBreak);
+    }
+  });
+  adPreview.addEventListener("timeupdate", () => {
+    if (!activePlaybackBreak || !Number.isFinite(adPreview.duration)) return;
+    document.querySelector("#ad-countdown").textContent = `${Math.max(0, Math.ceil(adPreview.duration - adPreview.currentTime))}s`;
+  });
+  adPreview.addEventListener("ended", async () => {
+    const item = activePlaybackBreak;
+    if (!item) return;
+    await recordPlaybackEvent("ad_complete", item);
+    resumeProgramme(item);
+  });
+  adPreview.addEventListener("error", async () => {
+    const item = activePlaybackBreak;
+    if (!item || adFailureHandled) return;
+    adFailureHandled = true;
+    await recordPlaybackEvent("error", item, "demo creative failed to load");
+    await recordPlaybackEvent("skip", item, "fail-open: resume programme");
+    resumeProgramme(item);
+  });
+  document.querySelector("#skip-demo-ad").addEventListener("click", async () => {
+    const item = activePlaybackBreak;
+    if (!item) return;
+    adFailureHandled = true;
+    await recordPlaybackEvent("skip", item, "reviewer skipped synthetic demo slate");
+    resumeProgramme(item);
+  });
+
+  fetch("/api/brands").then((response) => response.json()).then(({ brands = [] }) => {
+    catalogBrands = brands;
+    if (activeJob?.transcript) renderBreakDecisions(activeJob);
+  }).catch(() => {
+    document.querySelector("#playback-status").textContent = "The synthetic brand catalogue could not be loaded; VMAP creation is unavailable.";
   });
 
   fetch("/api/jobs").then((response) => response.json()).then(({ jobs = [] }) => {
