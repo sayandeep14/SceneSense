@@ -594,10 +594,20 @@ func evaluateBrandForScene(scene SceneEvidence, brand CatalogBrand) SceneBrandMa
 	for _, hit := range negativeContextHits(scene, brand.NegativeContexts) {
 		match.BlockedContexts = appendUnique(match.BlockedContexts, hit)
 	}
+	// A reviewer may place a manual marker anywhere, but cannot override these
+	// culture-sensitive adjacency blocks by choosing a brand with empty negatives.
+	for context := range canonicalContexts(sceneTerms(scene)) {
+		if universalSensitiveContexts[context] {
+			match.BlockedContexts = appendUnique(match.BlockedContexts, context)
+		}
+	}
 	if scene.Confidence < sceneConfidenceMin || scene.DialogueState == "unclear" {
 		match.BlockedContexts = appendUnique(match.BlockedContexts, "uncertain_scene")
 	}
 	match.Blocked = len(match.BlockedContexts) > 0
+	if match.Blocked && len(match.BlockedContexts) > 0 {
+		match.Reason = "Scene-context safety shield: an ad must wait until this story moment has passed."
+	}
 	match.Recommended = !match.Blocked && match.FitScore >= threshold
 	return match
 }
@@ -613,6 +623,25 @@ type adSuggestion struct {
 	Source         string               `json:"source"`
 	TargetContexts []string             `json:"target_contexts"`
 	Creatives      []suggestionCreative `json:"creatives"`
+	NextSafeTime   *float64             `json:"next_safe_time,omitempty"`
+}
+
+var universalSensitiveContexts = map[string]bool{
+	"grief": true, "medical": true, "violence": true, "injury": true,
+	"religious_ritual": true, "children_at_risk": true, "financial_distress": true,
+}
+
+func nextSafeBrandMoment(transcript *Transcript, at float64, brand CatalogBrand) *float64 {
+	for _, candidate := range transcript.BreakCandidates {
+		if !candidate.Potential || candidate.Time <= at+0.5 {
+			continue
+		}
+		if scene := sceneBeforeMarker(transcript, candidate.Time); scene != nil && evaluateBrandForScene(*scene, brand).Recommended {
+			next := candidate.Time
+			return &next
+		}
+	}
+	return nil
 }
 
 func sceneAfterMarker(transcript *Transcript, at float64) *SceneEvidence {
@@ -668,8 +697,12 @@ func (s *server) adSuggestions(w http.ResponseWriter, r *http.Request) {
 			creatives = append(creatives, suggestionCreative{CreativeID: creative.ID, DurationSec: creative.DurationSec, Language: creative.Language})
 		}
 		sort.SliceStable(creatives, func(i, j int) bool { return creatives[i].DurationSec < creatives[j].DurationSec })
+		var nextSafe *float64
+		if match.Blocked {
+			nextSafe = nextSafeBrandMoment(job.Transcript, at, brand)
+		}
 		suggestions = append(suggestions, adSuggestion{SceneBrandMatch: match, Source: brand.Source,
-			TargetContexts: brand.TargetContexts, Creatives: creatives})
+			TargetContexts: brand.TargetContexts, Creatives: creatives, NextSafeTime: nextSafe})
 	}
 	rank := func(item adSuggestion) int {
 		switch {

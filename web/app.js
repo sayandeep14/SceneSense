@@ -447,6 +447,14 @@
     note.className = `cut-dialog-note${candidate?.potential ? " cut-dialog-note-ok" : ""}`;
     note.textContent = notes.join(" · ");
     content.append(note, sceneBlock("Scene before the cut · the ad follows this", payload.scene_before, true));
+    const sensitive = (payload.scene_before?.sensitive_contexts || []).filter((tag) =>
+      ["mourning", "grief", "funeral", "injury", "illness", "hospital", "medical_emergency", "domestic_conflict", "violence", "accident", "religious_ritual", "children_at_risk", "financial_distress"].includes(tag));
+    if (sensitive.length) {
+      const shield = document.createElement("p");
+      shield.className = "cut-culture-shield";
+      shield.textContent = `Cultural-context shield: ${sensitive.map((tag) => tag.replaceAll("_", " ")).join(", ")} is next to this marker. No brand can run here, even if a reviewer adds the cut manually.`;
+      content.append(shield);
+    }
     const sameScene = payload.scene_after && payload.scene_before && payload.scene_after.scene_id === payload.scene_before.scene_id;
     content.append(sceneBlock(sameScene ? "After the cut · the same scene continues" : "Scene after the cut", sameScene ? null : payload.scene_after, false));
     if (sameScene) content.lastElementChild.querySelector("p").textContent = "The cut falls inside one scene, so an ad here would interrupt it.";
@@ -625,7 +633,8 @@
       const reason = document.createElement("span");
       reason.className = "cut-suggestion-reason";
       reason.textContent = suggestion.blocked
-        ? `Blocked by scene context: ${(suggestion.blocked_contexts || []).map((value) => value.replaceAll("_", " ")).join(", ")}`
+        ? `Blocked by scene context: ${(suggestion.blocked_contexts || []).map((value) => value.replaceAll("_", " ")).join(", ")}${Number.isFinite(suggestion.next_safe_time)
+          ? `. Next safe AI moment: ${formatDuration(suggestion.next_safe_time)} (${formatDuration(suggestion.next_safe_time - time)} later)` : ""}`
         : suggestion.reason;
       const detail = document.createElement("span");
       detail.className = "cut-suggestion-detail";

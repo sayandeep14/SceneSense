@@ -552,3 +552,4 @@ h1 { margin: 17px 0 8px; font-family: var(--display); font-size: clamp(32px, 3.4
 .observer-panel { display: grid; gap: 12px; }
 .observer-report { font-size: 12px; line-height: 1.5; color: #a6adbb; }
 .observer-report .observer-metric { padding: 6px 0; border-bottom: 1px solid rgba(255,255,255,.08); }
+.cut-culture-shield { padding: 10px 12px; border-left: 3px solid #ad685f; border-radius: 5px; background: #fbefed; color: #79443d; font-size: 11px; line-height: 1.5; }
