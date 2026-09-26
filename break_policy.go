@@ -19,26 +19,29 @@ const (
 )
 
 type BreakCandidate struct {
-	CandidateID          string            `json:"candidate_id"`
-	Time                 float64           `json:"time"`
-	Signals              []string          `json:"signals"`
-	Evidence             []string          `json:"evidence"`
-	BeforeText           string            `json:"before_text"`
-	AfterText            string            `json:"after_text"`
-	SceneContext         string            `json:"scene_context"`
-	TransitionKind       string            `json:"transition_kind,omitempty"`
-	TransitionEvidence   string            `json:"transition_evidence,omitempty"`
-	BrandRecommendations []SceneBrandMatch `json:"brand_recommendations,omitempty"`
-	BlockedBrandMatches  []SceneBrandMatch `json:"blocked_brand_matches,omitempty"`
-	Naturalness          float64           `json:"naturalness"`
-	DisruptionRisk       float64           `json:"disruption_risk"`
-	Confidence           float64           `json:"confidence"`
-	AIReason             string            `json:"ai_reason"`
-	AIModel              string            `json:"ai_model"`
-	AIPromptVer          string            `json:"ai_prompt_version"`
-	Decision             string            `json:"decision"`
-	Potential            bool              `json:"potential"`
-	Reasons              []PolicyReason    `json:"reasons"`
+	CandidateID                string            `json:"candidate_id"`
+	Time                       float64           `json:"time"`
+	Signals                    []string          `json:"signals"`
+	Evidence                   []string          `json:"evidence"`
+	BeforeText                 string            `json:"before_text"`
+	AfterText                  string            `json:"after_text"`
+	SceneContext               string            `json:"scene_context"`
+	PrecedingSceneContext      string            `json:"preceding_scene_context,omitempty"`
+	PrecedingSceneMood         string            `json:"preceding_scene_mood,omitempty"`
+	PrecedingSensitiveContexts []string          `json:"preceding_sensitive_contexts,omitempty"`
+	TransitionKind             string            `json:"transition_kind,omitempty"`
+	TransitionEvidence         string            `json:"transition_evidence,omitempty"`
+	BrandRecommendations       []SceneBrandMatch `json:"brand_recommendations,omitempty"`
+	BlockedBrandMatches        []SceneBrandMatch `json:"blocked_brand_matches,omitempty"`
+	Naturalness                float64           `json:"naturalness"`
+	DisruptionRisk             float64           `json:"disruption_risk"`
+	Confidence                 float64           `json:"confidence"`
+	AIReason                   string            `json:"ai_reason"`
+	AIModel                    string            `json:"ai_model"`
+	AIPromptVer                string            `json:"ai_prompt_version"`
+	Decision                   string            `json:"decision"`
+	Potential                  bool              `json:"potential"`
+	Reasons                    []PolicyReason    `json:"reasons"`
 }
 
 type PolicyReason struct {

@@ -39,7 +39,7 @@ func TestAIWorkerBoundaryAppliesPolicyToModelScores(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "worker.py")
 	contents := `import json,sys
 json.load(sys.stdin)
-json.dump({"duration":80,"segments":[{"start":2,"end":8,"text":"কথা শেষ।"}],"scenes":[{"scene_id":"one","start":0,"end":80,"summary":"A calm talk","dialogue_state":"completed_thought","confidence":0.9,"sensitive_contexts":[]}],"scene_analysis_status":"complete","silence_intervals":[{"start":39,"end":41,"duration":2}],"break_scoring_status":"complete","break_model":"test-model","break_prompt_version":"test-v1","break_candidates":[{"candidate_id":"candidate-001","time":40,"signals":["low_audio_pause"],"naturalness":0.9,"disruption_risk":0.1,"confidence":0.9,"ai_reason":"The pause feels natural.","ai_model":"test-model","ai_prompt_version":"test-v1"}]},sys.stdout)`
+json.dump({"duration":80,"segments":[{"start":2,"end":8,"text":"কথা শেষ।"}],"scenes":[{"scene_id":"one","start":0,"end":80,"summary":"A calm talk","dialogue_state":"completed_thought","confidence":0.9,"sensitive_contexts":[]}],"scene_analysis_status":"complete","silence_intervals":[{"start":39,"end":41,"duration":2}],"break_scoring_status":"complete","break_model":"test-model","break_prompt_version":"test-v1","break_candidates":[{"candidate_id":"candidate-001","time":40,"signals":["low_audio_pause"],"naturalness":0.9,"disruption_risk":0.1,"confidence":0.9,"ai_reason":"The pause feels natural.","ai_model":"test-model","ai_prompt_version":"test-v1","preceding_scene_context":"A quiet family conversation","preceding_scene_mood":"calm, warm","preceding_sensitive_contexts":["family"]}]},sys.stdout)`
 	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -49,6 +49,11 @@ json.dump({"duration":80,"segments":[{"start":2,"end":8,"text":"কথা শে
 	}
 	if transcript.BreakPolicy.AcceptedCount != 1 || transcript.BreakCandidates[0].Decision != "accepted" {
 		t.Fatalf("model scores were not filtered through the policy: %+v", transcript.BreakCandidates)
+	}
+	if transcript.BreakCandidates[0].PrecedingSceneMood != "calm, warm" ||
+		transcript.BreakCandidates[0].PrecedingSceneContext != "A quiet family conversation" ||
+		len(transcript.BreakCandidates[0].PrecedingSensitiveContexts) != 1 {
+		t.Fatalf("preceding scene context was lost at the Python/Go boundary: %+v", transcript.BreakCandidates[0])
 	}
 }
 
