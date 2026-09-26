@@ -200,6 +200,42 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual(request.call_args.args[0].get_header("Api-subscription-key"), "test-sarvam-key")
         self.assertIn(b"saaras:v4", request.call_args.args[0].data)
 
+    def test_sarvam_transient_timeout_retries_without_switching_provider(self):
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self, _limit):
+                return '{"transcript":"শুভ সকাল।"}'.encode()
+
+        with tempfile.TemporaryDirectory() as directory:
+            audio_path = Path(directory) / "chunk.wav"
+            audio_path.write_bytes(b"synthetic-wav")
+            with patch.dict("os.environ", {"SARVAM_API_KEY": "test-sarvam-key"}), \
+                    patch("worker.time.sleep") as sleep, \
+                    patch("worker.urllib.request.urlopen", side_effect=[TimeoutError("slow"), FakeResponse()]) as request:
+                payload = worker._transcribe_sarvam_chunk(audio_path, "saaras:v4")
+        self.assertEqual(payload["transcript"], "শুভ সকাল।")
+        self.assertEqual(request.call_count, 2)
+        self.assertEqual(request.call_args.kwargs["timeout"], worker.SARVAM_REQUEST_TIMEOUT)
+        sleep.assert_called_once()
+
+    def test_sarvam_auth_error_does_not_retry_or_fall_back_to_whisper(self):
+        with tempfile.TemporaryDirectory() as directory:
+            audio_path = Path(directory) / "chunk.wav"
+            audio_path.write_bytes(b"synthetic-wav")
+            forbidden = urllib.error.HTTPError(worker.SARVAM_API_URL, 403, "forbidden", {}, io.BytesIO(b'{}'))
+            with patch.dict("os.environ", {"SARVAM_API_KEY": "test-sarvam-key"}), \
+                    patch("worker.time.sleep") as sleep, \
+                    patch("worker.urllib.request.urlopen", side_effect=forbidden) as request:
+                with self.assertRaisesRegex(worker.WorkerError, "HTTP 403.*1 attempt"):
+                    worker._transcribe_sarvam_chunk(audio_path, "saaras:v4")
+        self.assertEqual(request.call_count, 1)
+        sleep.assert_not_called()
+
     def test_extracts_lossless_wav_when_sarvam_is_selected(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

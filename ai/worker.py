@@ -13,6 +13,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.request
 import wave
@@ -31,6 +32,8 @@ MODEL = "whisper-large-v3-turbo"
 SARVAM_MODEL = "saaras:v4"
 SARVAM_CHUNK_SECONDS = 25
 SARVAM_PARALLEL_REQUESTS = 4
+SARVAM_REQUEST_TIMEOUT = 120
+SARVAM_MAX_ATTEMPTS = 2
 ASR_PROVIDER = os.environ.get("ASR_PROVIDER", "groq").strip().lower() or "groq"
 SCENE_MODEL = os.environ.get("OPENAI_VISION_MODEL", "gpt-4o-mini").strip() or "gpt-4o-mini"
 BREAK_MODEL = os.environ.get("OPENAI_BREAK_MODEL", SCENE_MODEL).strip() or SCENE_MODEL
@@ -404,25 +407,36 @@ def _transcribe_sarvam_chunk(audio_path: Path, model: str) -> dict[str, Any]:
         },
         method="POST",
     )
-    try:
-        with urllib.request.urlopen(request, timeout=8 * 60) as response:
-            return json.loads(response.read(12 * 1024 * 1024))
-    except urllib.error.HTTPError as exc:
-        code = None
+    for attempt in range(1, SARVAM_MAX_ATTEMPTS + 1):
         try:
-            detail = json.loads(exc.read(64 * 1024))
-            error = detail.get("error", {}) if isinstance(detail, dict) else {}
-            raw_code = error.get("code") if isinstance(error, dict) else None
-            if isinstance(raw_code, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,80}", raw_code):
-                code = raw_code
-        except (json.JSONDecodeError, OSError):
-            pass
-        suffix = f" ({code})" if code else ""
-        raise WorkerError(f"Sarvam transcription returned HTTP {exc.code}{suffix}.") from exc
-    except (urllib.error.URLError, TimeoutError) as exc:
-        raise WorkerError("Could not reach Sarvam transcription, or the request timed out.") from exc
-    except (json.JSONDecodeError, OSError) as exc:
-        raise WorkerError("Sarvam returned an unreadable transcription response.") from exc
+            with urllib.request.urlopen(request, timeout=SARVAM_REQUEST_TIMEOUT) as response:
+                return json.loads(response.read(12 * 1024 * 1024))
+        except urllib.error.HTTPError as exc:
+            transient = exc.code in (429, 500, 502, 503, 504)
+            if transient and attempt < SARVAM_MAX_ATTEMPTS:
+                retry_after = exc.headers.get("Retry-After", "") if exc.headers else ""
+                delay = float(retry_after) if retry_after.isdigit() else 1.5 * attempt
+                time.sleep(min(5.0, max(0.0, delay)))
+                continue
+            code = None
+            try:
+                detail = json.loads(exc.read(64 * 1024))
+                error = detail.get("error", {}) if isinstance(detail, dict) else {}
+                raw_code = error.get("code") if isinstance(error, dict) else None
+                if isinstance(raw_code, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,80}", raw_code):
+                    code = raw_code
+            except (json.JSONDecodeError, OSError):
+                pass
+            suffix = f" ({code})" if code else ""
+            raise WorkerError(f"Sarvam transcription returned HTTP {exc.code}{suffix} after {attempt} attempt(s).") from exc
+        except (urllib.error.URLError, TimeoutError) as exc:
+            if attempt < SARVAM_MAX_ATTEMPTS:
+                time.sleep(1.5 * attempt)
+                continue
+            raise WorkerError(f"Could not reach Sarvam transcription, or the request timed out after {attempt} attempts. The analysis can be retried without changing providers.") from exc
+        except (json.JSONDecodeError, OSError) as exc:
+            raise WorkerError("Sarvam returned an unreadable transcription response.") from exc
+    raise WorkerError("Sarvam transcription did not complete.")
 
 
 def _transcribe_sarvam(audio_path: Path) -> dict[str, Any]:
