@@ -16,7 +16,7 @@ This file records the current release gate and what must pass before work moves 
 
 ## Phase 1 — Media intake
 
-**Status: implemented and locally verified in the app and container. Hosted deployment gate pending.**
+**Status: implemented, locally verified, and deployed to the protected production demo.**
 
 - MP4 upload with 500 MB and duration limits
 - Real media inspection through ffprobe
@@ -29,11 +29,11 @@ This file records the current release gate and what must pass before work moves 
 
 **Local release gate evidence:** generated MP4 fixture upload returns accurate metadata, duplicate upload reuses the same job, corrupt and silent videos are rejected, the source playback and job-detail endpoints work, and the studio page is served. The same container image builds, starts, serves health/UI, and includes ffprobe.
 
-**Hosted release gate:** the Railway production service is online with persistent upload storage; protected public demo deployment and end-to-end upload verification are in progress.
+**Hosted release gate:** the Railway production service is online with persistent upload storage. The public app is protected by the demo access gate, and authenticated upload, processing, library listing, and media playback have been verified end to end.
 
 ## Phase 2 — AI evidence layer
 
-**Status: local implementation and verification complete; protected production demo release in progress.**
+**Status: local implementation and verification complete; protected production demo is live.**
 
 - Go remains responsible for upload, API, job lifecycle, and serving the current UI.
 - A dependency-free Python worker extracts mono 16 kHz audio, calls Groq Whisper Large v3 Turbo, validates timestamps, detects low-audio intervals and visual shot cuts with FFmpeg, and samples at most 16 low-resolution frames.
@@ -52,4 +52,4 @@ This file records the current release gate and what must pass before work moves 
 
 **Live AI verification:** direct Groq synthetic smoke test returns HTTP 200. The full cleared asset completed the integrated local pipeline with 203 Bengali transcript segments, 14 structured scene summaries, and 137 low-audio intervals. The API exposed the scene evidence in the UI response, and a service restart restored the job and its evidence sidecar (mode 0600). The upload asset is explicitly approved for external processing by the user.
 
-**Remaining Phase 2 gate:** push the access-gate change, verify the protected production deployment, add the public Railway domain, and complete an end-to-end browser upload/evidence check. The Railway CLI is installed and linked locally; the domain is intentionally not created until the gate is deployed. `.env`, `.DS_Store`, supplied MP4s, and local `.railway/` link metadata are excluded from Git. A real external-model call is intentionally not part of CI.
+**Production demo:** [https://scenesense-production-9320.up.railway.app](https://scenesense-production-9320.up.railway.app). `/healthz` is public for Railway healthchecks; all other routes require HTTP Basic Auth (username `demo`, password supplied separately to the project owner). The unauthenticated app responds 401 and authenticated access responds 200. An approved 75-second excerpt from `bhojon_bilashi.mp4` completed hosted AI processing with 6 Bengali transcript segments, 3 scene summaries, 20 shot cuts, and 3 low-audio intervals. The job appears in the authenticated library, and its media endpoint serves the uploaded video. Railway reports the production service online with its persistent volume mounted. The password was rotated after a local headless-browser capture attempt timed out; the new value is being applied through the next deployment. `.env`, `.DS_Store`, supplied MP4s, and local `.railway/` link metadata are excluded from Git. A real external-model call is intentionally not part of CI.
