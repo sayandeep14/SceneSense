@@ -1,0 +1,13 @@
+.git
+.github
+.DS_Store
+data
+tmp
+*.mp4
+*.mov
+**/*.mp4
+**/*.mov
+.env*
+!.env.example
+__pycache__/
+*.py[cod]

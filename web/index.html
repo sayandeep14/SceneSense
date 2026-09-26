@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#f5f4ef" />
+    <meta name="description" content="AI-powered contextual ad placement for Bengali stories." />
+    <title>SceneSense — Contextual Ad Lab</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <a class="brand" href="/" aria-label="SceneSense home">
+          <span class="brand-mark"><i></i><i></i><i></i></span>
+          <span>scene<span class="brand-light">sense</span></span>
+        </a>
+        <div class="workspace-label">WORKSPACE</div>
+        <nav class="primary-nav" aria-label="Main navigation">
+          <a class="nav-item active" href="#workspace"><span class="nav-icon grid-icon">▦</span> Studio <span class="nav-caret">⌄</span></a>
+          <a class="nav-item muted" href="#timeline"><span class="nav-icon">◷</span> Break planner</a>
+          <a class="nav-item muted" href="#brands"><span class="nav-icon">◈</span> Brand catalogue</a>
+        </nav>
+        <div class="sidebar-rule"></div>
+        <div class="workspace-label">YOUR LIBRARY <button class="add-button" aria-label="Add to library">+</button></div>
+        <div id="library-list" class="library-list">
+          <div class="library-empty"><span class="folder-icon">▱</span><span>Your stories will<br />show up here</span></div>
+        </div>
+        <div class="sidebar-bottom">
+          <div class="help-card"><span class="help-spark">✳</span><div><strong>Built for the story</strong><p>Context first. Ads second.</p></div><span class="help-arrow">↗</span></div>
+          <div class="user-row"><div class="avatar">H</div><div class="user-copy"><strong>hoichoi studio</strong><span>Hackathon workspace</span></div><span class="more">···</span></div>
+        </div>
+      </aside>
+
+      <main id="workspace" class="main-content">
+        <header class="topbar">
+          <div class="breadcrumbs"><span>Workspace</span><b>/</b><strong>Studio</strong></div>
+          <div class="topbar-right"><div class="system-status"><span class="status-dot"></span><span>System ready</span></div><button class="icon-button" aria-label="Notifications">♧<span class="notification-dot"></span></button><div class="avatar small-avatar">H</div></div>
+        </header>
+
+        <div class="page-wrap">
+          <section class="page-heading">
+            <div>
+              <div class="eyebrow"><span class="eyebrow-star">✳</span> CONTEXTUAL AD LAB <span class="version-pill">MVP · PHASE 2</span></div>
+              <h1>Make every break<br class="mobile-break" /> feel like it <em>belongs.</em></h1>
+              <p class="page-subtitle">Find the breath between scenes. Match the moment, not just the audience.</p>
+            </div>
+            <div class="heading-ornament" aria-hidden="true"><span class="orbit orbit-one"></span><span class="orbit orbit-two"></span><span class="orbit-core">◒</span><span class="orbit-label">STORY<br />AWARE</span></div>
+          </section>
+
+          <section class="studio-grid">
+            <div class="primary-column">
+              <section class="panel upload-panel" aria-labelledby="upload-title">
+                <div class="panel-header">
+                  <div class="step-marker">01</div>
+                  <div class="panel-title-group"><h2 id="upload-title">Bring a story in</h2><p>Start with a Bengali drama or film clip.</p></div>
+                  <span class="format-badge"><span class="format-dot"></span> MP4 · up to 500 MB</span>
+                </div>
+                <div id="dropzone" class="dropzone" tabindex="0" role="button" aria-label="Choose or drop an MP4 video">
+                  <input id="video-input" type="file" accept="video/mp4,.mp4" hidden />
+                  <div class="upload-illustration" aria-hidden="true">
+                    <div class="upload-disc"><span class="upload-arrow">↑</span></div>
+                    <span class="spark spark-a">✳</span><span class="spark spark-b">·</span><span class="spark spark-c">✦</span>
+                  </div>
+                  <div class="drop-copy"><h3>Drop your video here</h3><p>or <button id="browse-button" class="text-button" type="button">browse files</button> from your device</p></div>
+                  <div class="drop-footer"><span>MP4 with audio</span><span class="drop-footer-separator">·</span><span>1 sec – 3 hours</span><span class="drop-footer-separator">·</span><span>Private by default</span></div>
+                </div>
+                <div id="upload-progress" class="upload-progress hidden" aria-live="polite">
+                  <div class="progress-file-icon">▶</div><div class="progress-copy"><div class="progress-top"><strong id="progress-name">Uploading video</strong><span id="progress-percent">0%</span></div><div class="progress-track"><span id="progress-fill"></span></div><span id="progress-message">Checking the file…</span></div><button id="cancel-upload" class="cancel-button" type="button">Cancel</button>
+                </div>
+                <div id="upload-error" class="upload-error hidden" role="alert"></div>
+              </section>
+
+              <section id="asset-panel" class="panel asset-panel hidden" aria-labelledby="asset-title">
+                <div class="asset-header">
+                  <div class="step-marker done-marker">✓</div>
+                  <div class="panel-title-group"><h2 id="asset-title">Your story is in</h2><p id="asset-description">Media intake is complete.</p></div>
+                  <span class="intake-badge"><span></span> INTAKE READY</span>
+                </div>
+                <div class="asset-preview-wrap">
+                  <video id="video-preview" class="asset-preview" controls playsinline></video>
+                  <div class="video-overlay-label"><span class="play-indicator">▶</span> SOURCE VIDEO</div>
+                </div>
+                <div class="asset-meta-row">
+                  <div class="asset-file"><div class="file-type">MP4</div><div><strong id="asset-filename">story.mp4</strong><span id="asset-resolution">Media details</span></div></div>
+                  <div class="meta-stat"><span>DURATION</span><strong id="asset-duration">—</strong></div>
+                  <div class="meta-stat"><span>AUDIO</span><strong id="asset-audio">—</strong></div>
+                  <button id="new-upload" class="outline-button" type="button">＋ New video</button>
+                </div>
+              </section>
+
+              <section id="timeline" class="panel timeline-panel" aria-labelledby="timeline-title">
+                <div class="panel-header timeline-header">
+                  <div class="step-marker future-marker">02</div>
+                  <div class="panel-title-group"><h2 id="timeline-title">Story understanding</h2><p>Scenes, dialogue, and natural break moments.</p></div>
+                  <span id="analysis-badge" class="coming-badge"><span class="lock-icon">⌑</span> READY FOR AI</span>
+                </div>
+                <div class="timeline-empty">
+                  <div class="wave-area" aria-hidden="true">
+                    <div class="wave-bars"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+                    <span class="wave-start">00:00</span><span class="wave-end">—:—</span>
+                  </div>
+                  <div class="timeline-caption"><span class="timeline-spark">✳</span><div><strong id="timeline-empty-title">The story comes first.</strong><p id="timeline-empty-copy">Upload a video to get its first look. Bengali speech and scene analysis are the next milestone.</p></div></div>
+                </div>
+                <section id="transcript-panel" class="transcript-panel hidden" aria-live="polite" aria-label="AI transcript">
+                  <div class="transcript-heading"><div><strong id="transcript-title">Bengali transcript</strong><span id="transcript-meta">AI evidence will appear here.</span></div><button id="retry-transcription" class="outline-button hidden" type="button">Retry transcription</button></div>
+                  <div id="transcript-empty" class="transcript-empty">Waiting for a video.</div>
+                  <ol id="transcript-list" class="transcript-list hidden"></ol>
+                </section>
+                <section id="scene-evidence" class="scene-evidence hidden" aria-label="AI scene evidence">
+                  <div class="scene-evidence-heading"><div><strong>Scene intelligence</strong><span id="scene-evidence-meta">Waiting for scene analysis.</span></div><span class="scene-ai-mark">AI</span></div>
+                  <div id="scene-warning" class="scene-warning hidden" role="status"></div>
+                  <div id="pause-evidence" class="pause-evidence hidden"><strong>Low-audio pauses</strong><div id="pause-list" class="pause-list"></div></div>
+                  <ol id="scene-list" class="scene-list"></ol>
+                </section>
+                <div class="phase-strip"><div class="phase-item phase-current"><span class="phase-check">✓</span><span>Media intake</span></div><span class="phase-connector"></span><div class="phase-item"><span class="phase-number">02</span><span>Scene & speech AI</span></div><span class="phase-connector"></span><div class="phase-item"><span class="phase-number">03</span><span>Safe ad moments</span></div><span class="phase-connector"></span><div class="phase-item"><span class="phase-number">04</span><span>Play & resume</span></div></div>
+              </section>
+            </div>
+
+            <aside class="secondary-column">
+              <section class="panel next-panel">
+                <div class="side-panel-heading"><div class="step-marker future-marker">↗</div><div><h2>What happens next</h2><p>A careful path from story to spot.</p></div></div>
+                <div class="next-steps">
+                  <div class="next-step"><div class="next-step-icon audio-icon">≋</div><div><strong>Hear every word</strong><p>Bengali speech, pauses, and speaker turns.</p><span class="step-state">UP NEXT</span></div></div>
+                  <div class="next-step"><div class="next-step-icon scene-icon">▧</div><div><strong>Understand the scene</strong><p>Story context, tone, and sensitive moments.</p><span class="step-state">AI ANALYSIS</span></div></div>
+                  <div class="next-step"><div class="next-step-icon match-icon">◈</div><div><strong>Find the right moment</strong><p>Natural pauses first. Brand fit second.</p><span class="step-state">POLICY CHECKED</span></div></div>
+                </div>
+                <div class="principle-note"><span>✳</span><p><strong>One rule is absolute:</strong> sensitive context blocks an ad match. Uncertainty means we wait.</p></div>
+              </section>
+
+              <section id="brands" class="panel policy-panel">
+                <div class="policy-heading"><span class="policy-shield">♢</span><div><h2>Viewer-first by design</h2><p>Hard rules that protect the moment.</p></div></div>
+                <div class="policy-row"><span class="policy-check">✓</span><span>No mid-sentence cutaways</span></div>
+                <div class="policy-row"><span class="policy-check">✓</span><span>Respect minimum break spacing</span></div>
+                <div class="policy-row"><span class="policy-check">✓</span><span>Block sensitive brand adjacency</span></div>
+                <div class="policy-footer"><span class="policy-led"></span> SAFETY POLICY · V0.1</div>
+              </section>
+
+              <div class="ai-note"><div class="ai-note-icon">✳</div><div><strong>AI understands the story.</strong><p>Rules protect the viewer and the business.</p></div></div>
+            </aside>
+          </section>
+
+          <footer class="page-footer"><span>SCENESENSE <span class="footer-separator">/</span> HOICHOI HACKATHON 2026</span><span>MADE FOR THE MOMENT <span class="footer-heart">♥</span></span></footer>
+        </div>
+      </main>
+    </div>
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <script src="/app.js" defer></script>
+  </body>
+</html>

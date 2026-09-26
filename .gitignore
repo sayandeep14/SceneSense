@@ -1,0 +1,31 @@
+# Local credentials
+.env*
+!.env.example
+
+# Python caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+
+# Local runtime data and build outputs
+/data/
+/tmp/
+/bin/
+/contextual-ad-lab
+*.test
+coverage.out
+
+# Operating-system metadata
+.DS_Store
+
+# Supplied/local video assets stay out of Git; brands.json remains tracked.
+assets/*.mp4
+assets/*.mov
+assets/*.m4v
+assets/*.mkv
+assets/*.webm
+assets/*.avi
+assets/*.mpeg
+assets/*.mpg
+assets/*.ts

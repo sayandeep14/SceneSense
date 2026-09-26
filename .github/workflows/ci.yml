@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test-and-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.x'
+          cache: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Format check
+        run: test -z "$(gofmt -l .)"
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test -race ./...
+
+      - name: Test AI worker
+        run: python -m unittest discover -s ai -p 'test_*.py'
+
+      - name: Build application
+        run: CGO_ENABLED=0 go build -trimpath -o /tmp/contextual-ad-lab .
+
+      - name: Build container
+        run: docker build -t contextual-ad-lab:${{ github.sha }} .
+
+      - name: Smoke test container
+        run: |
+          docker run -d --name contextual-ad-lab-ci -p 127.0.0.1:18080:8080 contextual-ad-lab:${{ github.sha }}
+          for attempt in {1..20}; do
+            if curl --fail --silent http://127.0.0.1:18080/healthz; then
+              break
+            fi
+            sleep 1
+          done
+          curl --fail --silent http://127.0.0.1:18080/healthz
+          curl --fail --silent http://127.0.0.1:18080/ | grep -q "Make every break"
+          docker exec contextual-ad-lab-ci python3 --version
+          docker stop contextual-ad-lab-ci
