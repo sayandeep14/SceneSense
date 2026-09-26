@@ -552,3 +552,6 @@ h1 { margin: 17px 0 8px; font-family: var(--display); font-size: clamp(32px, 3.4
 .observer-panel { display: grid; gap: 12px; }
 .observer-report { font-size: 12px; line-height: 1.5; color: #a6adbb; }
 .observer-report .observer-metric { padding: 6px 0; border-bottom: 1px solid rgba(255,255,255,.08); }
+.demo-link { color: #8b5087; font-size: 11px; font-weight: 700; white-space: nowrap; text-decoration: none; }
+.demo-link:hover { color: #ba68a7; }
+@media (max-width: 580px) { .demo-link { font-size: 9px; } }

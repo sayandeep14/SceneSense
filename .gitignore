@@ -35,3 +35,8 @@ assets/*.ts
 .venv/
 /models/
 telemetry/target/
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+web/demo/
+/:memory:.ses
