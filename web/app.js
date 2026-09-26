@@ -306,6 +306,20 @@
 
   const defaultSkipAfter = (durationSec) => Math.max(0, Math.min(5, (Number(durationSec) || 1) - 1));
 
+  function moodAt(job, time) {
+    const scenes = job.transcript?.scenes || [];
+    const scene = scenes.find((item) => item.start <= time && item.end >= time) ||
+      [...scenes].reverse().find((item) => item.end <= time + 0.5);
+    if (!scene || scene.sensitive_contexts?.length) return "";
+    const labels = (scene.tone || []).join(" ").toLowerCase();
+    if (/joy|happy|celebrat|playful|warm/.test(labels)) return "warm";
+    if (/reflect|calm|quiet|gentle|nostalg/.test(labels)) return "reflective";
+    if (/tense|fear|anger|sad|grief/.test(labels)) return "";
+    return "calm";
+  }
+
+  const showMoodBumper = () => document.querySelector("#show-mood-bumper").checked;
+
   function previewBreakFromChoice(job, time, brandId, creativeId, options) {
     const brand = catalogBrands.find((entry) => entry.brand_id === brandId);
     const creative = brand?.creatives.find((entry) => entry.id === creativeId);
@@ -320,6 +334,7 @@
         id: "preview", time, brandName: brand.display_name, creativeUrl: `/${creative.url}`, durationSec: creative.duration_sec,
         allowSkip, skipAfterSec: allowSkip ? Number(options.skipAfter ?? defaultSkipAfter(creative.duration_sec)) : 0,
         clickUrl, ctaLabel: clickUrl ? (options.ctaLabel || brand.cta_label || "Visit website") : "",
+        mood: showMoodBumper() ? moodAt(job, time) : "",
       }],
     });
   }
@@ -334,6 +349,7 @@
         id: item.break_id, time: item.time, brandName: item.brand_name, creativeUrl: item.creative_url,
         durationSec: item.duration_sec, allowSkip: item.allow_skip, skipAfterSec: item.skip_after_sec,
         clickUrl: item.click_through_url || "", ctaLabel: item.cta_label || "",
+        mood: showMoodBumper() ? moodAt(job, item.time) : "",
       })),
       onEvent: (type, item, detail) => recordPlaybackEvent(type, { break_id: item.id, time: item.time }, detail),
     });

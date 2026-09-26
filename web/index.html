@@ -148,6 +148,7 @@
                   <ol id="break-list" class="break-list"></ol>
                   <section id="playback-planner" class="playback-planner" aria-label="Ad playback plan">
                     <div class="playback-planner-heading"><strong>Review &amp; finalize</strong><span id="finalize-state" class="finalize-state">Draft · not finalized</span></div>
+                    <label class="mood-bumper-toggle"><input id="show-mood-bumper" type="checkbox" checked> Show AI-mood synthetic bumper in demo player <span>Preview only · excluded from VMAP/VAST</span></label>
                     <p class="playback-disclaimer">Built-in brands use black-screen placeholder MP4s; uploaded ads play as provided. Brand targeting and negative contexts come from the ad library and are rechecked by the server.</p>
                     <div id="playback-break-config" class="playback-break-config"></div>
                     <div class="playback-actions"><button id="build-vmap" class="outline-button" type="button" disabled>Finalize &amp; export</button><button id="play-programme" class="primary-button" type="button" disabled>▶ Play programme with breaks</button></div>
@@ -242,6 +243,7 @@
             <div id="player-stage" class="player-stage">
               <video id="player-programme" class="player-video" playsinline preload="auto"></video>
               <video id="player-ad" class="player-video player-ad-video" playsinline preload="auto"></video>
+              <div id="player-mood-bumper" class="player-mood-bumper hidden" role="status" aria-live="polite"><span class="bumper-kicker">SCENESENSE · SYNTHETIC TRANSITION</span><span id="bumper-symbol" class="bumper-symbol" aria-hidden="true">✳</span><strong id="bumper-title">A quiet pause</strong><span id="bumper-subtitle">An ad matched to the moment</span></div>
               <div id="player-upcoming" class="player-upcoming hidden" aria-live="polite"></div>
               <div id="player-ad-ui" class="player-ad-ui hidden">
                 <div class="player-ad-top"><span class="player-ad-badge">Ad</span><span id="player-ad-meta" class="player-ad-meta"></span></div>
