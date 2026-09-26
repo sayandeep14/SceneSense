@@ -4,7 +4,7 @@ An AI-first contextual ad placement MVP for Bengali video. This repository is be
 
 ## Current release
 
-**Phases 0–4 are deployed; Phase 5 VMAP and ad playback is in implementation.** Go handles uploads, jobs, and deterministic policy. The Python worker supports Bengali ASR via Sarvam Saaras v4 or Groq Whisper, detects low-audio intervals and shot cuts, and asks OpenAI for structured scene evidence and break naturalness scores. A Go policy rejects breaks during speech, uncertain or sensitive scenes, and unfinished thoughts, and enforces pacing and ad-load limits. The UI shows accepted and withheld moments with seekable markers and exact reasons; a saved analysis can be opened with `?job=<id>`. The hosted positive selection was verified on a constructed two-scene test fixture; the tested unmodified real excerpts had no eligible break and were correctly withheld.
+**Phases 0–5 are deployed.** Go handles uploads, jobs, and deterministic policy. The Python worker supports Bengali ASR via Sarvam Saaras v4 or Groq Whisper, detects low-audio intervals and shot cuts, and asks OpenAI for structured scene evidence and break naturalness scores. A Go policy rejects breaks during speech, uncertain or sensitive scenes, and unfinished thoughts, and enforces pacing and ad-load limits. The UI shows accepted and withheld moments with seekable markers and exact reasons; Phase 5 adds VMAP planning and playback with local placeholder creatives. A saved analysis can be opened with `?job=<id>`. The hosted positive selection was verified on a constructed two-scene test fixture; the tested unmodified real excerpts had no eligible break and were correctly withheld.
 
 ## Run locally
 
