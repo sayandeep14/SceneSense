@@ -34,14 +34,20 @@ type CatalogBrand struct {
 	TargetContexts   []string          `json:"target_contexts"`
 	NegativeContexts []string          `json:"negative_contexts"`
 	Creatives        []CatalogCreative `json:"creatives"`
+	ClickThroughURL  string            `json:"click_through_url,omitempty"`
+	CTALabel         string            `json:"cta_label,omitempty"`
 	Source           string            `json:"source,omitempty"`
 }
 
 type PlaybackSelection struct {
-	Time       float64 `json:"time"`
-	BrandID    string  `json:"brand_id"`
-	CreativeID string  `json:"creative_id"`
-	Source     string  `json:"source"`
+	Time            float64 `json:"time"`
+	BrandID         string  `json:"brand_id"`
+	CreativeID      string  `json:"creative_id"`
+	Source          string  `json:"source"`
+	AllowSkip       bool    `json:"allow_skip"`
+	SkipAfterSec    int     `json:"skip_after_sec"`
+	ClickThroughURL string  `json:"click_through_url"`
+	CTALabel        string  `json:"cta_label"`
 }
 
 type PlaybackBreak struct {
@@ -58,6 +64,10 @@ type PlaybackBreak struct {
 	Source         string  `json:"source"`
 	SceneMood      string  `json:"preceding_scene_mood,omitempty"`
 	SceneContext   string  `json:"preceding_scene_context,omitempty"`
+	AllowSkip      bool    `json:"allow_skip"`
+	SkipAfterSec   int     `json:"skip_after_sec"`
+	ClickURL       string  `json:"click_through_url,omitempty"`
+	CTALabel       string  `json:"cta_label,omitempty"`
 }
 
 type PlaybackPlan struct {
@@ -113,6 +123,12 @@ func validateCatalogEntries(brands []CatalogBrand) error {
 				return errors.New("brand catalogue contains an invalid creative")
 			}
 			seenCreatives[creative.ID] = true
+		}
+		if url, err := normalizeClickURL(brand.ClickThroughURL); err != nil || url != brand.ClickThroughURL {
+			return errors.New("brand catalogue contains an invalid website link")
+		}
+		if label, err := normalizeCTALabel(brand.CTALabel); err != nil || label != brand.CTALabel {
+			return errors.New("brand catalogue contains an invalid button label")
 		}
 	}
 	return nil
@@ -255,6 +271,32 @@ func buildPlaybackPlan(job Job, selections []PlaybackSelection, brands []Catalog
 				return PlaybackPlan{}, errors.New("AI-selected placement is not in the AI potential list")
 			}
 		}
+		if selection.AllowSkip && (selection.SkipAfterSec < 0 || selection.SkipAfterSec >= creative.DurationSec) {
+			return PlaybackPlan{}, fmt.Errorf("skip must unlock before the %d-second ad ends", creative.DurationSec)
+		}
+		clickURL, err := normalizeClickURL(selection.ClickThroughURL)
+		if err != nil {
+			return PlaybackPlan{}, err
+		}
+		ctaLabel, err := normalizeCTALabel(selection.CTALabel)
+		if err != nil {
+			return PlaybackPlan{}, err
+		}
+		if clickURL == "" {
+			clickURL = brand.ClickThroughURL
+		}
+		if ctaLabel == "" {
+			ctaLabel = brand.CTALabel
+		}
+		if clickURL == "" {
+			ctaLabel = ""
+		} else if ctaLabel == "" {
+			ctaLabel = defaultCTALabel
+		}
+		skipAfter := 0
+		if selection.AllowSkip {
+			skipAfter = selection.SkipAfterSec
+		}
 		previousMood, previousContext := scene.Tone, scene.Summary
 		breakID := fmt.Sprintf("break-%03d", i+1)
 		plan.Breaks = append(plan.Breaks, PlaybackBreak{
@@ -264,6 +306,7 @@ func buildPlaybackPlan(job Job, selections []PlaybackSelection, brands []Catalog
 			DurationSec:   creative.DurationSec, Language: creative.Language,
 			CreativeURL: absoluteURL(r, "/ads/"+brand.BrandID+"/"+filepath.Base(creative.SourceURL)),
 			Source:      selection.Source, SceneMood: strings.Join(previousMood, ", "), SceneContext: previousContext,
+			AllowSkip: selection.AllowSkip, SkipAfterSec: skipAfter, ClickURL: clickURL, CTALabel: ctaLabel,
 		})
 		totalAdSeconds += float64(creative.DurationSec)
 	}
@@ -413,7 +456,15 @@ func renderVAST(item PlaybackBreak) string {
 	b.WriteString(`<VAST version="3.0"><Ad id="` + xmlEscape(item.BreakID) + `"><InLine>`)
 	b.WriteString(`<AdSystem version="1.0">SceneSense Demo</AdSystem><AdTitle>` + xmlEscape(item.SourceFilename) + `</AdTitle>`)
 	b.WriteString(`<Description>Demo creative for ` + xmlEscape(item.BrandName) + ` at ` + formatVMAPTime(item.Time) + `; annotated preceding-scene mood: ` + xmlEscape(item.SceneMood) + `.</Description>`)
-	b.WriteString(`<Creatives><Creative sequence="1"><Linear><Duration>` + formatVMAPTime(float64(item.DurationSec)) + `</Duration><MediaFiles>`)
+	b.WriteString(`<Creatives><Creative sequence="1"><Linear`)
+	if item.AllowSkip {
+		b.WriteString(` skipoffset="` + formatVMAPTime(float64(item.SkipAfterSec)) + `"`)
+	}
+	b.WriteString(`><Duration>` + formatVMAPTime(float64(item.DurationSec)) + `</Duration>`)
+	if item.ClickURL != "" {
+		b.WriteString(`<VideoClicks><ClickThrough><![CDATA[` + item.ClickURL + `]]></ClickThrough></VideoClicks>`)
+	}
+	b.WriteString(`<MediaFiles>`)
 	b.WriteString(`<MediaFile delivery="progressive" type="video/mp4" width="640" height="360" scalable="true" maintainAspectRatio="true"><![CDATA[` + item.CreativeURL + `]]></MediaFile>`)
 	b.WriteString(`</MediaFiles></Linear></Creative></Creatives></InLine></Ad></VAST>`)
 	return b.String()
@@ -442,7 +493,7 @@ func (s *server) recordPlaybackEvent(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "Playback event is invalid.")
 		return
 	}
-	validEvents := map[string]bool{"break_start": true, "ad_start": true, "ad_complete": true, "resume": true, "error": true, "skip": true}
+	validEvents := map[string]bool{"break_start": true, "ad_start": true, "ad_complete": true, "resume": true, "error": true, "skip": true, "click_through": true}
 	if !validEvents[event.Event] || math.IsNaN(event.ProgrammeAt) || math.IsInf(event.ProgrammeAt, 0) {
 		writeError(w, http.StatusBadRequest, "Playback event type or time is invalid.")
 		return

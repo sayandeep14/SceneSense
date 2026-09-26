@@ -108,8 +108,16 @@ func TestUploadedAdPersistsAndIsSuggestedForMatchingScene(t *testing.T) {
 		t.Fatalf("upload reusing a built-in brand name status=%d, want 409", builtin.Code)
 	}
 
+	badLink := httptest.NewRecorder()
+	app.routes().ServeHTTP(badLink, adUploadRequest(t, map[string]string{"brand_name": "Brand Tea", "target_contexts": "tea",
+		"click_through_url": "ftp://brand-tea.example"}, videoPath))
+	if badLink.Code != http.StatusBadRequest {
+		t.Fatalf("upload with a non-http link status=%d, want 400", badLink.Code)
+	}
+
 	fields := map[string]string{"brand_name": "Brand Tea", "category": "beverage/tea",
-		"target_contexts": "Conversation, family\nmorning", "negative_contexts": "funeral; hospital"}
+		"target_contexts": "Conversation, family\nmorning", "negative_contexts": "funeral; hospital",
+		"click_through_url": " https://brand-tea.example/app ", "cta_label": "Install app"}
 	response := httptest.NewRecorder()
 	app.routes().ServeHTTP(response, adUploadRequest(t, fields, videoPath))
 	if response.Code != http.StatusCreated {
@@ -140,7 +148,8 @@ func TestUploadedAdPersistsAndIsSuggestedForMatchingScene(t *testing.T) {
 		t.Fatal(err)
 	}
 	persisted, ok := findBrand(catalog, brand.BrandID)
-	if !ok || persisted.Source != brandSourceCustom || len(persisted.Creatives) != 2 {
+	if !ok || persisted.Source != brandSourceCustom || len(persisted.Creatives) != 2 ||
+		persisted.ClickThroughURL != "https://brand-tea.example/app" || persisted.CTALabel != "Install app" {
 		t.Fatalf("uploaded brand did not persist: %+v", persisted)
 	}
 	file := filepath.Base(persisted.Creatives[1].SourceURL)

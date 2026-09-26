@@ -14,12 +14,8 @@
   let activeJob = null;
   let catalogBrands = [];
   let playbackPlan = null;
-  let activePlaybackBreak = null;
-  let playbackAdStarted = false;
-  let adFailureHandled = false;
   let breakContext = null;
   let dialogRequest = 0;
-  const playedBreaks = new Set();
   const pollingJobs = new Set();
   const cutDialog = document.querySelector("#cut-dialog");
 
@@ -151,22 +147,33 @@
       label.textContent = `${formatDuration(item.time)} · ${item.source === "manual" ? "manual" : "AI"}`;
       const choice = document.createElement("span");
       choice.className = `playback-break-choice${creative ? "" : " playback-break-missing"}`;
+      const link = item.clickUrl || brand?.click_through_url;
       choice.textContent = creative
-        ? `${brand.display_name} · ${creative.duration_sec}s · ${creative.language}${brand.source === "custom" ? " · uploaded" : ""}`
+        ? `${brand.display_name} · ${creative.duration_sec}s${brand.source === "custom" ? " · uploaded" : ""} · ${item.allowSkip === false
+          ? "no skip" : `skip after ${item.skipAfter ?? defaultSkipAfter(creative.duration_sec)}s`}${link ? " · link" : ""}`
         : "No ad chosen yet";
       const edit = document.createElement("button");
       edit.type = "button";
       edit.className = "outline-button";
       edit.textContent = creative ? "Change ad" : "Choose ad";
       edit.onclick = () => openCutDialog(item.time);
-      row.append(label, choice, edit);
+      row.append(label, choice);
+      if (creative) {
+        const preview = document.createElement("button");
+        preview.type = "button";
+        preview.className = "outline-button";
+        preview.textContent = "▶ Preview";
+        preview.onclick = () => previewBreakFromChoice(job, item.time, item.brandId, item.creativeId, item);
+        row.append(preview);
+      }
+      row.append(edit);
       rows.append(row);
     }
     build.disabled = !allRowsReady;
     if (!allRowsReady) {
       status.textContent = "Choose an ad for every marker: click it on the timeline or use Choose ad. If every brand is blocked after a scene, leave that break out.";
     } else if (playbackPlan?.breaks?.length === state.selected.length) {
-      status.textContent = "VMAP ready. Play to pause at each marker, show its creative, then resume the programme.";
+      status.textContent = "VMAP ready. Play the programme in the player to see every break, skip button, and website link.";
     } else {
       status.textContent = "Brand safety, spacing, and actual ad durations are checked again by the server when you build the VMAP.";
     }
@@ -178,13 +185,16 @@
           method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ breaks: state.selected.map((selection) => ({
             time: selection.time, source: selection.source, brand_id: selection.brandId, creative_id: selection.creativeId,
+            allow_skip: selection.allowSkip ?? true,
+            skip_after_sec: selection.allowSkip === false ? 0 : Number(selection.skipAfter ?? defaultSkipAfter(
+              catalogBrands.find((brand) => brand.brand_id === selection.brandId)?.creatives.find((creative) => creative.id === selection.creativeId)?.duration_sec)),
+            click_through_url: selection.clickUrl || "", cta_label: selection.ctaLabel || "",
           })) }),
         });
         const payload = await response.json();
         if (!response.ok) throw new Error(payload.error || "The playback plan could not be validated.");
         playbackPlan = payload.plan;
         activeJob.playback_plan = playbackPlan;
-        playedBreaks.clear();
         document.querySelector("#vmap-download").href = playbackPlan.vmap_url;
         document.querySelector("#debug-download").href = playbackPlan.debug_url;
         document.querySelector("#playback-downloads").classList.remove("hidden");
@@ -197,7 +207,7 @@
         build.disabled = false;
       }
     };
-    play.onclick = () => startProgrammeWithAds(job);
+    play.onclick = () => playFullProgramme(job);
   }
 
   function renderPlaybackEventHistory(events) {
@@ -224,56 +234,38 @@
     } catch { /* Event persistence is best-effort; playback remains local and fail-safe. */ }
   }
 
-  function startProgrammeWithAds(job) {
-    if (!playbackPlan?.breaks?.length || !job?.id) return;
-    const video = document.querySelector("#video-preview");
-    playedBreaks.clear();
-    activePlaybackBreak = null;
-    playbackAdStarted = false;
-    renderPlaybackEventHistory([]);
-    video.currentTime = 0;
-    video.play().catch(() => showToast("Press play on the programme player to start the demo."));
-  }
+  const defaultSkipAfter = (durationSec) => Math.max(0, Math.min(5, (Number(durationSec) || 1) - 1));
 
-  async function playScheduledBreak(item) {
-    if (activePlaybackBreak || playedBreaks.has(item.break_id)) return;
-    const video = document.querySelector("#video-preview");
-    const ad = document.querySelector("#ad-preview");
-    activePlaybackBreak = item;
-    playbackAdStarted = false;
-    adFailureHandled = false;
-    playedBreaks.add(item.break_id);
-    video.pause();
-    video.currentTime = item.time;
-    document.querySelector("#ad-preview-title").textContent = item.brand_name;
-    document.querySelector("#ad-preview-file").textContent = `Creative file: ${item.source_filename}`;
-    document.querySelector("#ad-preview-time").textContent = `Insertion point: ${formatDuration(item.time)} · ${item.duration_sec}s`;
-    document.querySelector("#ad-preview-context").textContent = `Annotated preceding-scene mood: ${item.preceding_scene_mood || "unclear"} · ${item.preceding_scene_context || "No scene summary"}`;
-    document.querySelector("#ad-countdown").textContent = `${item.duration_sec}s`;
-    document.querySelector("#ad-preview-overlay").classList.remove("hidden");
-    await recordPlaybackEvent("break_start", item);
-    ad.src = item.creative_url;
-    ad.load();
-    ad.play().catch(async (error) => {
-      if (!activePlaybackBreak || adFailureHandled) return;
-      adFailureHandled = true;
-      await recordPlaybackEvent("error", item, "synthetic creative failed to start");
-      await recordPlaybackEvent("skip", item, error?.message || "ad playback failed; fail open to programme");
-      resumeProgramme(item);
+  function previewBreakFromChoice(job, time, brandId, creativeId, options) {
+    const brand = catalogBrands.find((entry) => entry.brand_id === brandId);
+    const creative = brand?.creatives.find((entry) => entry.id === creativeId);
+    if (!brand || !creative) return;
+    const clickUrl = options.clickUrl || brand.click_through_url || "";
+    const allowSkip = options.allowSkip ?? true;
+    document.querySelector("#video-preview").pause();
+    window.SceneSensePlayer.open({
+      mode: "preview", title: job.fileName, programmeUrl: job.videoUrl, duration: job.media.durationSeconds,
+      startAt: Math.max(0, time - 8), endAt: Math.min(job.media.durationSeconds, time + 6),
+      breaks: [{
+        id: "preview", time, brandName: brand.display_name, creativeUrl: `/${creative.url}`, durationSec: creative.duration_sec,
+        allowSkip, skipAfterSec: allowSkip ? Number(options.skipAfter ?? defaultSkipAfter(creative.duration_sec)) : 0,
+        clickUrl, ctaLabel: clickUrl ? (options.ctaLabel || brand.cta_label || "Visit website") : "",
+      }],
     });
   }
 
-  function resumeProgramme(item) {
-    const video = document.querySelector("#video-preview");
-    const ad = document.querySelector("#ad-preview");
-    document.querySelector("#ad-preview-overlay").classList.add("hidden");
-    ad.pause();
-    activePlaybackBreak = null;
-    playbackAdStarted = false;
-    video.currentTime = item.time;
-    video.play().then(() => recordPlaybackEvent("resume", item)).catch(() => {
-      recordPlaybackEvent("error", item, "programme could not resume automatically");
-      showToast("Ad finished. Press play to continue the programme.");
+  function playFullProgramme(job) {
+    if (!playbackPlan?.breaks?.length) return;
+    document.querySelector("#video-preview").pause();
+    renderPlaybackEventHistory([]);
+    window.SceneSensePlayer.open({
+      mode: "programme", title: job.fileName, programmeUrl: job.videoUrl, duration: job.media.durationSeconds, startAt: 0,
+      breaks: playbackPlan.breaks.map((item) => ({
+        id: item.break_id, time: item.time, brandName: item.brand_name, creativeUrl: item.creative_url,
+        durationSec: item.duration_sec, allowSkip: item.allow_skip, skipAfterSec: item.skip_after_sec,
+        clickUrl: item.click_through_url || "", ctaLabel: item.cta_label || "",
+      })),
+      onEvent: (type, item, detail) => recordPlaybackEvent(type, { break_id: item.id, time: item.time }, detail),
     });
   }
 
@@ -338,6 +330,7 @@
     document.querySelector("#cut-dialog-status").textContent = "";
     document.querySelector("#cut-dialog-remove").classList.toggle("hidden", !existing);
     confirm.disabled = true;
+    document.querySelector("#cut-dialog-preview").disabled = true;
     confirm.textContent = existing ? "Update ad break" : "Add ad break";
     const loading = document.createElement("p");
     loading.className = "cut-dialog-note";
@@ -412,12 +405,110 @@
     durationLabel.textContent = "Ad duration";
     const durationSelect = document.createElement("select");
     durationLabel.append(durationSelect);
+
+    const viewer = document.createElement("fieldset");
+    viewer.className = "cut-viewer-options";
+    const legend = document.createElement("legend");
+    legend.textContent = "Viewer experience";
+    const skipToggle = document.createElement("label");
+    skipToggle.className = "cut-switch";
+    const allowSkip = document.createElement("input");
+    allowSkip.type = "checkbox";
+    allowSkip.checked = existing?.allowSkip ?? true;
+    const switchTrack = document.createElement("span");
+    switchTrack.className = "cut-switch-track";
+    switchTrack.setAttribute("aria-hidden", "true");
+    skipToggle.append(allowSkip, switchTrack, document.createTextNode("Allow skip"));
+    const skipAfterLabel = document.createElement("label");
+    skipAfterLabel.className = "cut-inline-field";
+    skipAfterLabel.append(document.createTextNode("Skip after"));
+    const skipAfter = document.createElement("input");
+    skipAfter.type = "number";
+    skipAfter.min = "0";
+    skipAfter.step = "1";
+    skipAfter.inputMode = "numeric";
+    const seconds = document.createElement("span");
+    seconds.textContent = "seconds";
+    skipAfterLabel.append(skipAfter, seconds);
+    const skipRow = document.createElement("div");
+    skipRow.className = "cut-viewer-row";
+    skipRow.append(skipToggle, skipAfterLabel);
+    const linkLabel = document.createElement("label");
+    linkLabel.className = "cut-field";
+    linkLabel.append(document.createTextNode("Website link"));
+    const linkInput = document.createElement("input");
+    linkInput.type = "url";
+    linkInput.inputMode = "url";
+    linkInput.maxLength = 500;
+    linkInput.placeholder = "https://brand.example/app";
+    linkInput.value = existing?.clickUrl || "";
+    const linkHint = document.createElement("span");
+    linkHint.className = "field-hint";
+    linkLabel.append(linkInput, linkHint);
+    const ctaLabelField = document.createElement("label");
+    ctaLabelField.className = "cut-field cut-field-short";
+    ctaLabelField.append(document.createTextNode("Button label"));
+    const ctaInput = document.createElement("input");
+    ctaInput.maxLength = 24;
+    ctaInput.setAttribute("list", "cta-label-options");
+    ctaInput.value = existing?.ctaLabel || "";
+    ctaLabelField.append(ctaInput);
+    const linkRow = document.createElement("div");
+    linkRow.className = "cut-viewer-row cut-viewer-row-wide";
+    linkRow.append(linkLabel, ctaLabelField);
+    viewer.append(legend, skipRow, linkRow);
+
+    const preview = document.querySelector("#cut-dialog-preview");
+    const creativeSeconds = () => suggestions.find((item) => item.brand_id === selectedBrand)?.creatives
+      .find((creative) => creative.creative_id === selectedCreative)?.duration_sec || 0;
+    let skipTouched = existing?.skipAfter !== undefined;
+    skipAfter.value = String(existing?.skipAfter ?? 5);
+    const viewerProblem = () => {
+      const duration = creativeSeconds();
+      const wait = Number(skipAfter.value);
+      if (allowSkip.checked && (!Number.isInteger(wait) || wait < 0 || (duration && wait >= duration))) {
+        return `Skip must unlock between 0 and ${Math.max(0, duration - 1)} seconds for this ${duration}-second ad.`;
+      }
+      const link = linkInput.value.trim();
+      if (link) {
+        try {
+          const parsed = new URL(link);
+          if (!/^https?:$/.test(parsed.protocol)) throw new Error();
+        } catch {
+          return "The website link must start with http:// or https://.";
+        }
+      }
+      return "";
+    };
     const update = () => {
-      confirm.disabled = Boolean(issue) || !selectedBrand || !selectedCreative;
-      status.textContent = issue || (suggestions.every((item) => item.blocked)
+      const brand = catalogBrands.find((entry) => entry.brand_id === selectedBrand);
+      skipAfter.disabled = !allowSkip.checked;
+      skipAfterLabel.classList.toggle("is-disabled", !allowSkip.checked);
+      if (creativeSeconds()) skipAfter.max = String(creativeSeconds() - 1);
+      if (!skipTouched && creativeSeconds()) skipAfter.value = String(defaultSkipAfter(creativeSeconds()));
+      const libraryLink = brand?.click_through_url;
+      linkHint.textContent = libraryLink
+        ? `Leave blank to use the library link (${libraryLink.replace(/^https?:\/\/(www\.)?/, "").split("/")[0]}).`
+        : "Optional. Opens in a new tab from the ad and pauses it.";
+      ctaInput.placeholder = brand?.cta_label || "Visit website";
+      const problem = viewerProblem();
+      confirm.disabled = Boolean(issue) || !selectedBrand || !selectedCreative || Boolean(problem);
+      preview.disabled = !selectedBrand || !selectedCreative || Boolean(problem);
+      status.textContent = issue || problem || (suggestions.every((item) => item.blocked)
         ? "Every ad is blocked or uncertain after this scene, so the break stays empty."
         : selectedBrand ? "" : "Choose a brand that is not blocked.");
     };
+    allowSkip.onchange = update;
+    skipAfter.oninput = () => { skipTouched = true; update(); };
+    linkInput.oninput = update;
+    ctaInput.oninput = update;
+    const viewerChoice = () => {
+      const clickUrl = linkInput.value.trim();
+      const hasLink = clickUrl || catalogBrands.find((entry) => entry.brand_id === selectedBrand)?.click_through_url;
+      return { allowSkip: allowSkip.checked, skipAfter: allowSkip.checked ? Number(skipAfter.value) : 0,
+        clickUrl, ctaLabel: hasLink ? ctaInput.value.trim() : "" };
+    };
+    preview.onclick = () => previewBreakFromChoice(job, time, selectedBrand, selectedCreative, viewerChoice());
     const renderDurations = () => {
       const suggestion = suggestions.find((item) => item.brand_id === selectedBrand);
       const creatives = suggestion?.creatives || [];
@@ -474,19 +565,18 @@
       option.append(radio, body);
       list.append(option);
     }
-    content.append(heading, list, durationLabel);
+    content.append(heading, list, durationLabel, viewer);
     renderDurations();
 
     confirm.onclick = () => {
       if (existing) {
-        existing.brandId = selectedBrand;
-        existing.creativeId = selectedCreative;
+        Object.assign(existing, { brandId: selectedBrand, creativeId: selectedCreative, ...viewerChoice() });
       } else {
         const nearby = candidates.find((item) => (item.potential || (item.potential === undefined && item.decision === "accepted")) &&
           Math.abs(item.time - time) < 0.5);
         if (nearby) state.excludedAI = state.excludedAI.filter((id) => id !== nearby.candidate_id);
         state.selected.push({ time, source: "manual", ...(nearby ? { candidateId: nearby.candidate_id } : {}),
-          brandId: selectedBrand, creativeId: selectedCreative });
+          brandId: selectedBrand, creativeId: selectedCreative, ...viewerChoice() });
         state.selected.sort((left, right) => left.time - right.time);
         state.target = Math.max(state.target, state.selected.length);
         selectBestAIBreaks(state, candidates, state.target, policy.min_gap_seconds);
@@ -534,6 +624,15 @@
       const meta = document.createElement("p");
       meta.className = "ad-library-meta";
       meta.textContent = `${brand.category || "uncategorised"} · ${[...new Set(brand.creatives.map((creative) => creative.duration_sec))].sort((a, b) => a - b).map((seconds) => `${seconds}s`).join(" / ")}`;
+      if (brand.click_through_url) {
+        const link = document.createElement("a");
+        link.className = "ad-library-link";
+        link.href = brand.click_through_url;
+        link.target = "_blank";
+        link.rel = "noopener noreferrer";
+        link.textContent = `${brand.cta_label || "Visit website"} ↗ ${brand.click_through_url.replace(/^https?:\/\/(www\.)?/, "").split("/")[0]}`;
+        meta.append(" · ", link);
+      }
       const tags = document.createElement("div");
       tags.className = "scene-tags";
       const targets = brand.target_contexts || [];
@@ -605,11 +704,7 @@
   }
 
   function showJob(job, { notify = false, poll = true } = {}) {
-    if (activeJob?.id !== job.id) {
-      playbackPlan = null;
-      activePlaybackBreak = null;
-      playedBreaks.clear();
-    }
+    if (activeJob?.id !== job.id) playbackPlan = null;
     activeJob = job;
     if (job.playback_plan) playbackPlan = job.playback_plan;
     progressPanel.classList.add("hidden");
@@ -1225,51 +1320,15 @@
   dropzone.addEventListener("drop", (event) => uploadFile(event.dataTransfer?.files?.[0]));
 
   const previewVideo = document.querySelector("#video-preview");
-  const adPreview = document.querySelector("#ad-preview");
   const reviewSeek = document.querySelector("#review-seek");
   const reviewTime = document.querySelector("#review-time");
   previewVideo.addEventListener("timeupdate", () => {
     reviewSeek.value = String(previewVideo.currentTime || 0);
     reviewTime.value = formatDuration(previewVideo.currentTime || 0);
-    if (!playbackPlan || previewVideo.paused || activePlaybackBreak) return;
-    const due = playbackPlan.breaks.find((item) => !playedBreaks.has(item.break_id) && previewVideo.currentTime >= item.time);
-    if (due) playScheduledBreak(due);
   });
   previewVideo.addEventListener("loadedmetadata", () => {
     reviewSeek.max = String(previewVideo.duration || 0);
   });
-  adPreview.addEventListener("playing", () => {
-    if (activePlaybackBreak && !playbackAdStarted) {
-      playbackAdStarted = true;
-      recordPlaybackEvent("ad_start", activePlaybackBreak);
-    }
-  });
-  adPreview.addEventListener("timeupdate", () => {
-    if (!activePlaybackBreak || !Number.isFinite(adPreview.duration)) return;
-    document.querySelector("#ad-countdown").textContent = `${Math.max(0, Math.ceil(adPreview.duration - adPreview.currentTime))}s`;
-  });
-  adPreview.addEventListener("ended", async () => {
-    const item = activePlaybackBreak;
-    if (!item) return;
-    await recordPlaybackEvent("ad_complete", item);
-    resumeProgramme(item);
-  });
-  adPreview.addEventListener("error", async () => {
-    const item = activePlaybackBreak;
-    if (!item || adFailureHandled) return;
-    adFailureHandled = true;
-    await recordPlaybackEvent("error", item, "demo creative failed to load");
-    await recordPlaybackEvent("skip", item, "fail-open: resume programme");
-    resumeProgramme(item);
-  });
-  document.querySelector("#skip-demo-ad").addEventListener("click", async () => {
-    const item = activePlaybackBreak;
-    if (!item) return;
-    adFailureHandled = true;
-    await recordPlaybackEvent("skip", item, "reviewer skipped synthetic demo slate");
-    resumeProgramme(item);
-  });
-
   document.querySelector("#cut-dialog-close").addEventListener("click", () => cutDialog.close());
   cutDialog.addEventListener("click", (event) => { if (event.target === cutDialog) cutDialog.close(); });
 
@@ -1282,6 +1341,8 @@
     adForm.elements.category.value = brand.category === "uncategorised" ? "" : brand.category;
     adForm.elements.target_contexts.value = (brand.target_contexts || []).join(", ");
     adForm.elements.negative_contexts.value = (brand.negative_contexts || []).join(", ");
+    adForm.elements.click_through_url.value = brand.click_through_url || "";
+    adForm.elements.cta_label.value = brand.cta_label || "";
     adStatus.textContent = `Adding another creative to ${brand.display_name}. Its contexts will be updated to what you submit.`;
   });
   adForm.addEventListener("submit", (event) => {
@@ -1295,6 +1356,9 @@
     else if (!file) problem = "Choose the ad video.";
     else if (!file.name.toLowerCase().endsWith(".mp4")) problem = "The ad must be an MP4 file.";
     else if (file.size > 200 * 1024 * 1024) problem = "The ad must be smaller than 200 MB.";
+    else if (adForm.elements.click_through_url.value.trim() && !/^https?:\/\/\S+$/i.test(adForm.elements.click_through_url.value.trim())) {
+      problem = "The website link must start with http:// or https://.";
+    }
     if (problem) {
       adStatus.textContent = problem;
       return;

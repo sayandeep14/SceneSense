@@ -251,3 +251,53 @@ func TestMissingCreativeReturnsNotFoundWithoutGeneratingIt(t *testing.T) {
 		t.Fatalf("server unexpectedly created a missing creative: stat error=%v", err)
 	}
 }
+
+func TestPlaybackPlanCarriesSkipAndClickThroughIntoVAST(t *testing.T) {
+	job, brands := playbackFixture(t, 1800)
+	brands[0].ClickThroughURL, brands[0].CTALabel = "https://brand-a.example/offer", "Shop now"
+	request := httptest.NewRequest(http.MethodPost, "/", nil)
+	selection := PlaybackSelection{Time: 60, BrandID: brands[0].BrandID, CreativeID: brands[0].Creatives[0].ID,
+		Source: "manual", AllowSkip: true, SkipAfterSec: 5}
+	plan, err := buildPlaybackPlan(job, []PlaybackSelection{selection}, brands, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	item := plan.Breaks[0]
+	if !item.AllowSkip || item.SkipAfterSec != 5 || item.ClickURL != "https://brand-a.example/offer" || item.CTALabel != "Shop now" {
+		t.Fatalf("break should inherit the library link and keep skip settings: %+v", item)
+	}
+	vast := renderVAST(item)
+	var doc struct {
+		Linear struct {
+			SkipOffset   string `xml:"skipoffset,attr"`
+			ClickThrough string `xml:"VideoClicks>ClickThrough"`
+		} `xml:"Ad>InLine>Creatives>Creative>Linear"`
+	}
+	if err := xml.Unmarshal([]byte(vast), &doc); err != nil {
+		t.Fatalf("VAST is not well-formed: %v\n%s", err, vast)
+	}
+	if doc.Linear.SkipOffset != "00:00:05.000" || doc.Linear.ClickThrough != "https://brand-a.example/offer" {
+		t.Fatalf("VAST skip/click contract = %+v\n%s", doc.Linear, vast)
+	}
+
+	selection.ClickThroughURL, selection.CTALabel, selection.AllowSkip = "https://override.example/app", "", false
+	plan, err = buildPlaybackPlan(job, []PlaybackSelection{selection}, brands, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if item := plan.Breaks[0]; item.ClickURL != "https://override.example/app" || item.CTALabel != "Shop now" || item.SkipAfterSec != 0 ||
+		strings.Contains(renderVAST(item), "skipoffset") {
+		t.Fatalf("per-break link should override and non-skippable ads must omit skipoffset: %+v", item)
+	}
+
+	for _, bad := range []PlaybackSelection{
+		{Time: 60, BrandID: brands[0].BrandID, CreativeID: brands[0].Creatives[0].ID, Source: "manual", AllowSkip: true, SkipAfterSec: 15},
+		{Time: 60, BrandID: brands[0].BrandID, CreativeID: brands[0].Creatives[0].ID, Source: "manual", AllowSkip: true, SkipAfterSec: -1},
+		{Time: 60, BrandID: brands[0].BrandID, CreativeID: brands[0].Creatives[0].ID, Source: "manual", ClickThroughURL: "javascript:alert(1)"},
+		{Time: 60, BrandID: brands[0].BrandID, CreativeID: brands[0].Creatives[0].ID, Source: "manual", ClickThroughURL: "https://x.example/a]]>b"},
+	} {
+		if _, err := buildPlaybackPlan(job, []PlaybackSelection{bad}, brands, request); err == nil {
+			t.Fatalf("invalid skip or link settings should be rejected: %+v", bad)
+		}
+	}
+}

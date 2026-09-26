@@ -10,6 +10,7 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -30,6 +31,8 @@ const (
 	aiFitThreshold     = 0.55
 	contextFitMinimum  = 0.30
 	sceneConfidenceMin = 0.65
+	defaultCTALabel    = "Visit website"
+	maxCTALabelLength  = 24
 )
 
 //go:embed ai/context_taxonomy.json
@@ -122,6 +125,33 @@ func parseContextList(raw string) ([]string, error) {
 		return nil, fmt.Errorf("add at most %d contexts per list", maxContextsPerList)
 	}
 	return values, nil
+}
+
+// normalizeClickURL accepts an empty link or an absolute http(s) URL that is safe to place in VAST CDATA.
+func normalizeClickURL(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", nil
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || len(raw) > 500 || (parsed.Scheme != "https" && parsed.Scheme != "http") || parsed.Host == "" ||
+		parsed.User != nil || strings.ContainsAny(raw, " \t\r\n") || strings.Contains(raw, "]]>") {
+		return "", errors.New("the website link must be a full http:// or https:// address")
+	}
+	return parsed.String(), nil
+}
+
+func normalizeCTALabel(raw string) (string, error) {
+	label := strings.Join(strings.Fields(raw), " ")
+	if utf8.RuneCountInString(label) > maxCTALabelLength {
+		return "", fmt.Errorf("the button label must be at most %d characters", maxCTALabelLength)
+	}
+	for _, r := range label {
+		if unicode.IsControl(r) {
+			return "", errors.New("the button label contains invalid characters")
+		}
+	}
+	return label, nil
 }
 
 func brandSlug(name string) string {
@@ -221,6 +251,19 @@ func (s *server) uploadAd(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "Negative contexts: "+err.Error()+".")
 		return
 	}
+	clickURL, err := normalizeClickURL(r.FormValue("click_through_url"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "Website link: "+err.Error()+".")
+		return
+	}
+	ctaLabel, err := normalizeCTALabel(r.FormValue("cta_label"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "Button label: "+err.Error()+".")
+		return
+	}
+	if clickURL == "" {
+		ctaLabel = ""
+	}
 	file, header, err := r.FormFile("video")
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "An ad video file is required.")
@@ -272,6 +315,7 @@ func (s *server) uploadAd(w http.ResponseWriter, r *http.Request) {
 	}
 	brand := &custom[brandIndex]
 	brand.Category, brand.TargetContexts, brand.NegativeContexts = category, targets, negatives
+	brand.ClickThroughURL, brand.CTALabel = clickURL, ctaLabel
 
 	brandDir := filepath.Join(s.adLibraryDir, "ads", brand.BrandID)
 	if err := os.MkdirAll(brandDir, 0o750); err != nil {

@@ -102,3 +102,13 @@ This file records the current release gate and what must pass before work moves 
 - Brands scored by the scene model keep their AI fit; brands added later get a deterministic context match against the scene's activities and description. Negative contexts are enforced in Go for every brand through the shared `ai/context_taxonomy.json` aliases plus literal phrase matches, so a new brand's unseen negative context (for example `alcohol`) still blocks. Uncertain scenes block every brand, and the VMAP build re-applies the same check.
 
 **Local gate evidence:** Go race tests cover upload validation, persistence across a server restart, static serving of uploaded creatives, suggestion ranking, unseen negative-context blocking, and VMAP acceptance/rejection of an uploaded brand. A headless-Chrome run against a synthetic three-scene fixture uploaded an ad, saw it suggested after a tea scene, saw every brand blocked after a funeral scene, placed two breaks, built the VMAP, and confirmed both persisted after reload. The uploaded creative served with HTTP 200 and 206 range responses.
+
+## Player screen, skip rules, and website links
+
+**Status: implemented and verified locally; not yet deployed.**
+
+- A dedicated player screen (`web/player.js`) replaces the inline ad overlay. It shows a programme timeline with yellow ad markers, an "Ad in N" countdown, and an ad state with a sponsor card and a skip button that counts down and unlocks at the configured second. It also has an ad progress bar, a paused state after the website opens, a break list with per-break outcomes, keyboard shortcuts, full-screen mode, and an end-of-session summary.
+- Each break stores allow-skip, skip-after seconds, and an optional website link and button label. The ad library keeps a default link and label per uploaded brand. The plan API validates them: skip must unlock before the ad ends, and links must be absolute http(s) addresses. VAST emits `skipoffset` and `VideoClicks/ClickThrough`.
+- Preview plays one break in context before it is added. Full playback uses the same player for the VMAP plan and records `click_through` alongside the existing events.
+
+**Local gate evidence:** Go race tests cover skip and link validation, library-link fallback and per-break override, omission of `skipoffset` for non-skippable ads, and upload-time link validation. A headless-Chrome run previewed a break and confirmed the following. The countdown appeared. Skip unlocked at 5.1 seconds. The website opened in a new tab and paused the ad. Skip returned to the exact break time, and the summary recorded the skip and the click. Full playback also worked: a non-skippable ad hid the skip button, jumping from the break list played the chosen break, and events were persisted.

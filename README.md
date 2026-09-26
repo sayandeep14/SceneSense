@@ -51,10 +51,13 @@ The container includes Go, Python 3, and FFmpeg. Set the selected ASR provider a
 - `GET /api/brands` — built-in catalogue merged with uploaded ads (`source`: `builtin` or `custom`)
 - `POST /api/ads` — multipart ad upload: `video` (MP4, up to 120 s / 200 MB), `brand_name`, `category`, `target_contexts`, `negative_contexts` (comma-separated), `language`
 - `GET /api/jobs/{id}/ad-suggestions?time=<seconds>` — scene before/after a cut and every brand ranked for it, with hard blocks
+- `POST /api/jobs/{id}/playback-plan` — each break also takes `allow_skip`, `skip_after_sec`, `click_through_url`, and `cta_label`; VAST carries them as `skipoffset` and `ClickThrough`
 
 ## Ad library and cut review
 
 Ads uploaded in the Ad library panel are stored under `AD_LIBRARY_DIR` with a `catalog.json` beside them, so they persist across restarts on the mounted volume. The built-in `assets/brands.json` stays read-only; reusing an uploaded brand's name adds another duration to it. Clicking any shot cut or marker on the timeline opens a review window showing the scene before and after the cut (activities, mood, caution tags) and the ads ranked for it. Brands that the scene model scored use their AI fit; brands added after analysis get a deterministic context match against the scene's activities and description. Negative contexts are always enforced in Go — through the shared `ai/context_taxonomy.json` aliases and literal phrase matches — and an uncertain scene blocks every ad. The server re-applies the same check when the VMAP is built.
+
+Each break also has viewer options: allow skip (default on), skip after N seconds (default 5, and it must unlock before the ad ends), and a website link with a button label. The link defaults to the one saved with the ad in the library and can be overridden per break. **Preview** in the cut window, and on each planner row, opens the player screen about 8 seconds before the break. It plays the ad with its skip countdown and website button, then resumes the programme and shows a short summary. Opening the website starts a new tab and pauses the ad. **Play programme with breaks** uses the same player for the whole VMAP plan and records break, ad, skip, click-through and resume events.
 
 Job metadata, transcript, scene evidence, and pause intervals are atomically stored as private `.job.json` sidecars alongside the uploaded videos. Interrupted jobs restore as retryable failures; active inference is not resumed automatically.
 
