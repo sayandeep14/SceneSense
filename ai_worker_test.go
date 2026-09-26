@@ -21,7 +21,7 @@ json.dump({"language":"bengali","duration":2,"text":"নমস্কার","seg
 	if err := os.WriteFile(worker, []byte(contents), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	transcript, err := runAIWorker(context.Background(), python, worker, "unused.mp4", t.TempDir(), "assets/brands.json", "fixture-hash", nil)
+	transcript, err := runAIWorker(context.Background(), python, worker, workerRequest{VideoPath: "unused.mp4", WorkDir: t.TempDir(), BrandsPath: "assets/brands.json", ContentHash: "fixture-hash"}, nil)
 	if err != nil {
 		t.Fatalf("run AI worker: %v", err)
 	}
@@ -43,7 +43,7 @@ json.dump({"duration":80,"segments":[{"start":2,"end":8,"text":"কথা শে
 	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	transcript, err := runAIWorker(context.Background(), python, path, "unused.mp4", t.TempDir(), "assets/brands.json", "fixture-hash", nil)
+	transcript, err := runAIWorker(context.Background(), python, path, workerRequest{VideoPath: "unused.mp4", WorkDir: t.TempDir(), BrandsPath: "assets/brands.json", ContentHash: "fixture-hash"}, nil)
 	if err != nil {
 		t.Fatalf("run worker: %v", err)
 	}
@@ -72,7 +72,7 @@ sys.exit(2)`
 		t.Fatal(err)
 	}
 	var stages []string
-	_, err = runAIWorker(context.Background(), python, path, "unused.mp4", t.TempDir(), "assets/brands.json", "fixture-hash",
+	_, err = runAIWorker(context.Background(), python, path, workerRequest{VideoPath: "unused.mp4", WorkDir: t.TempDir(), BrandsPath: "assets/brands.json", ContentHash: "fixture-hash"},
 		func(stage string, progress int, message string) { stages = append(stages, stage) })
 	if len(stages) != 1 || stages[0] != "detecting_shots" {
 		t.Fatalf("progress stages = %v", stages)
@@ -117,7 +117,7 @@ func TestAIWorkerRejectsInvalidOutput(t *testing.T) {
 	if err := os.WriteFile(worker, []byte(`print('{"duration":1,"segments":[{"start":0.8,"end":1},{"start":0.2,"end":0.7}]}')`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	_, err = runAIWorker(context.Background(), python, worker, "unused.mp4", t.TempDir(), "assets/brands.json", "fixture-hash", nil)
+	_, err = runAIWorker(context.Background(), python, worker, workerRequest{VideoPath: "unused.mp4", WorkDir: t.TempDir(), BrandsPath: "assets/brands.json", ContentHash: "fixture-hash"}, nil)
 	if err == nil || !strings.Contains(err.Error(), "invalid segment timestamps") {
 		t.Fatalf("error = %v, want invalid segment timestamps", err)
 	}

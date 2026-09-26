@@ -124,6 +124,30 @@ type workerRequest struct {
 	WorkDir     string `json:"work_dir"`
 	BrandsPath  string `json:"brands_path"`
 	ContentHash string `json:"content_hash"`
+	// FromPhase is "" (use any cached result), "transcription" (run ASR again), or
+	// "scene_analysis" (reuse Transcript and redo everything after ASR).
+	FromPhase  string           `json:"from_phase,omitempty"`
+	Transcript *savedTranscript `json:"transcript,omitempty"`
+}
+
+// savedTranscript is the ASR output a scene-analysis retry reuses instead of transcribing again.
+type savedTranscript struct {
+	Language             string              `json:"language"`
+	Duration             float64             `json:"duration"`
+	Text                 string              `json:"text"`
+	Segments             []TranscriptSegment `json:"segments"`
+	Model                string              `json:"model"`
+	TimestampAdjustments int                 `json:"timestamp_adjustments"`
+}
+
+// asrOnly keeps only the transcription so the job can show it while later phases re-run.
+func asrOnly(transcript *Transcript) *Transcript {
+	if transcript == nil {
+		return nil
+	}
+	return &Transcript{Language: transcript.Language, Duration: transcript.Duration, Text: transcript.Text,
+		Segments: transcript.Segments, Model: transcript.Model, TimestampAdjustments: transcript.TimestampAdjustments,
+		ContentHash: transcript.ContentHash, SceneAnalysisStatus: "unavailable", BreakScoringStatus: "unavailable"}
 }
 
 // progressWriter forwards "@@progress {json}" lines from the worker's stderr and keeps the rest as error text.
@@ -162,9 +186,9 @@ func (p *progressWriter) handle(line string) {
 	p.errors.WriteString(line + "\n")
 }
 
-func runAIWorker(ctx context.Context, pythonBin, workerPath, videoPath, workDir, brandsPath, contentHash string,
+func runAIWorker(ctx context.Context, pythonBin, workerPath string, request workerRequest,
 	onProgress func(stage string, progress int, message string)) (Transcript, error) {
-	input, err := json.Marshal(workerRequest{VideoPath: videoPath, WorkDir: workDir, BrandsPath: brandsPath, ContentHash: contentHash})
+	input, err := json.Marshal(request)
 	if err != nil {
 		return Transcript{}, errors.New("could not prepare AI worker input")
 	}
@@ -299,7 +323,7 @@ func validateBrandMatches(matches []SceneBrandMatch) error {
 	return nil
 }
 
-func (s *server) transcribeJob(id string) {
+func (s *server) transcribeJob(id, fromPhase string) {
 	s.analysisSlots <- struct{}{}
 	defer func() { <-s.analysisSlots }()
 
@@ -311,6 +335,17 @@ func (s *server) transcribeJob(id string) {
 	}
 	job.Status, job.Stage, job.Progress = "processing", "transcribing_bengali_speech", 28
 	job.Message = "Preparing audio and transcribing Bengali speech with timestamps."
+	request := workerRequest{VideoPath: s.uploadPath(id), WorkDir: s.uploadDir, BrandsPath: s.brandsPath,
+		ContentHash: job.ContentHash, FromPhase: fromPhase}
+	// A transcript with no segments is valid: the programme may have no dialogue.
+	if fromPhase != "transcription" && job.Transcript != nil && job.Transcript.Model != "" {
+		saved := job.Transcript
+		request.Transcript = &savedTranscript{Language: saved.Language, Duration: saved.Duration, Text: saved.Text,
+			Segments: saved.Segments, Model: saved.Model, TimestampAdjustments: saved.TimestampAdjustments}
+	}
+	if fromPhase == "scene_analysis" {
+		job.Stage, job.Progress, job.Message = "detecting_shots", 34, "Re-running scene analysis with the saved transcript."
+	}
 	s.jobs[id] = job
 	if err := s.persistJob(job); err != nil {
 		s.logger.Error("persist running job state", "job_id", id, "error", err)
@@ -319,7 +354,7 @@ func (s *server) transcribeJob(id string) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), analysisTimeout)
 	defer cancel()
-	transcript, err := runAIWorker(ctx, s.pythonBin, s.workerPath, s.uploadPath(id), s.uploadDir, s.brandsPath, job.ContentHash,
+	transcript, err := runAIWorker(ctx, s.pythonBin, s.workerPath, request,
 		func(stage string, progress int, message string) { s.updateJobProgress(id, stage, progress, message) })
 	s.jobsMu.Lock()
 	defer s.jobsMu.Unlock()
@@ -345,7 +380,8 @@ func (s *server) transcribeJob(id string) {
 				job.Message = "Bengali transcript and AI scene evidence are ready. " + transcript.PauseDetectionError
 			}
 		} else if transcript.SceneAnalysisError != "" {
-			job.Message += " Scene analysis is unavailable: " + transcript.SceneAnalysisError
+			job.Message = "The transcript is saved, but scene analysis did not finish: " + transcript.SceneAnalysisError +
+				" Retry scene analysis to continue without transcribing again."
 		}
 		job.Transcript = &transcript
 		s.logger.Info("AI evidence complete", "job_id", id, "segments", len(transcript.Segments),

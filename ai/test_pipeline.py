@@ -185,6 +185,56 @@ class RateLimitTests(unittest.TestCase):
                          scene_ai.IMAGE_TOKENS + 100 + 50)
 
 
+class RetryPhaseTests(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.root = Path(self.directory.name)
+        self.video = self.root / "episode.mp4"
+        self.video.write_bytes(b"video")
+        self.request = {"video_path": str(self.video), "work_dir": str(self.root), "brands_path": str(BRANDS)}
+        self.transcript = {"language": "bn", "duration": 10.0, "text": "কথা", "model": worker._asr_label(),
+                           "segments": [{"text": "কথা", "start": 0.5, "end": 2.0}], "timestamp_adjustments": 0}
+
+    def tearDown(self):
+        self.directory.cleanup()
+
+    def run_worker(self, request, transcribe_result=None):
+        with patch("worker.extract_audio", return_value=self.root / "audio.wav"), \
+                patch("worker.transcribe", side_effect=[transcribe_result] if transcribe_result else AssertionError("ASR ran")) as asr, \
+                patch("worker.detect_silences", return_value=[]), patch("worker.analyze_programme"), \
+                contextlib.redirect_stderr(io.StringIO()):
+            result = worker.run(request)
+        return result, asr.call_count
+
+    def test_scene_retry_uses_the_supplied_transcript_without_asr(self):
+        result, calls = self.run_worker({**self.request, "from_phase": "scene_analysis", "transcript": self.transcript})
+        self.assertEqual((calls, result["segments"][0]["text"], result["evidence_cache_hit"]), (0, "কথা", True))
+        silent = {**self.transcript, "text": "", "segments": []}  # no dialogue is still a transcript
+        result, calls = self.run_worker({**self.request, "from_phase": "scene_analysis", "transcript": silent})
+        self.assertEqual((calls, result["segments"]), (0, []))
+
+    def test_transcript_is_saved_right_after_asr_so_a_failed_analysis_can_retry_cheaply(self):
+        with patch("worker.extract_audio", return_value=self.root / "audio.wav"), \
+                patch("worker.transcribe", return_value=self.transcript), patch("worker.detect_silences", return_value=[]), \
+                patch("worker.analyze_programme", side_effect=RuntimeError("worker crashed after ASR")), \
+                contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(RuntimeError):
+                worker.run(self.request)
+        result, calls = self.run_worker({**self.request, "from_phase": "scene_analysis"})
+        self.assertEqual(calls, 0)
+        self.assertEqual(result["segments"][0]["text"], "কথা")
+
+    def test_transcription_retry_ignores_saved_transcripts_and_scene_retry_needs_one(self):
+        fresh = {**self.transcript, "text": "নতুন", "segments": [{"text": "নতুন", "start": 0.5, "end": 2.0}]}
+        result, calls = self.run_worker({**self.request, "from_phase": "transcription", "transcript": self.transcript}, fresh)
+        self.assertEqual((calls, result["segments"][0]["text"]), (1, "নতুন"))
+        for path in self.root.glob("transcript-*.json"):
+            path.unlink()
+        with self.assertRaisesRegex(worker.WorkerError, "retry transcription"):
+            self.run_worker({**self.request, "from_phase": "scene_analysis",
+                             "transcript": {**self.transcript, "model": "another-asr"}})
+
+
 @unittest.skipUnless(HAS_FFMPEG, "FFmpeg is not installed")
 class ShotDetectionTests(unittest.TestCase):
     @classmethod

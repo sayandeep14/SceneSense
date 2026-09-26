@@ -455,3 +455,37 @@ h1 { margin: 17px 0 8px; font-family: var(--display); font-size: clamp(32px, 3.4
 .finalize-state { padding: 3px 6px; border-radius: 4px; background: #fbf0dc; color: #9c6c2b; font: 8px var(--mono); letter-spacing: .04em; text-transform: uppercase; }
 .finalize-state-final { background: #e6f2e6; color: #3f7f55; }
 @media (max-width: 580px) { .break-funnel strong { font-size: 16px; } }
+
+/* Phase status: which analysis phases ran, and where a retry starts. */
+.phase-status { display: grid; gap: 1px; margin: 0 17px 12px; overflow: hidden; border: 1px solid #e9ece5; border-radius: 7px; background: #eef1eb; }
+.phase-row { display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 9px 12px; background: #fff; }
+.phase-icon { display: grid; width: 20px; height: 20px; place-items: center; border-radius: 50%; background: #f0f3ed; color: #7e8a7f; font: 700 10px var(--mono); }
+.phase-done .phase-icon { background: #e6f2e6; color: #3f7f55; }
+.phase-running .phase-icon { background: #fbf0dc; color: #aa7941; animation: ai-pulse 1.5s ease-in-out infinite; }
+.phase-failed .phase-icon { background: #fbe8e1; color: #b5654a; }
+.phase-copy { display: grid; min-width: 0; gap: 2px; }
+.phase-copy strong { color: #3f4b41; font-size: 11px; }
+.phase-copy span { overflow: hidden; color: #859085; font-size: 9px; line-height: 1.4; text-overflow: ellipsis; }
+.phase-failed .phase-copy span { color: #a2593f; }
+.phase-row .outline-button,.phase-row .primary-button { margin: 0; white-space: nowrap; }
+@media (max-width: 580px) { .phase-status { margin: 0 11px 12px; }.phase-row { grid-template-columns: 22px minmax(0, 1fr); }.phase-row button { grid-column: 2; justify-self: start; } }
+
+/* Removing videos and uploaded ads. */
+.library-item { position: relative; display: flex; align-items: center; }
+.library-item .library-job { padding-right: 30px; }
+.library-delete { position: absolute; right: 6px; width: 22px; height: 22px; padding: 0; border: 0; border-radius: 50%; background: transparent; color: #9eafa0; font-size: 15px; line-height: 1; cursor: pointer; opacity: 0; }
+.library-item:hover .library-delete,.library-delete:focus-visible { opacity: 1; }
+.library-delete:hover { background: #4a2f28; color: #f3c2b2; }
+.library-delete:focus-visible { outline: 2px solid #dda078; }
+@media (hover: none) { .library-delete { opacity: 1; } }
+@media (max-width: 850px) { .library-delete { display: none; } }
+.danger-button { color: #a2593f; }
+.danger-button:hover { border-color: #d7a592; background: #fdf5f2; }
+.asset-meta-row .danger-button + .outline-button { margin-left: 0; }
+.ad-remove { margin-left: auto; padding: 3px 7px; border: 1px solid #ecd9d1; border-radius: 4px; background: #fff; color: #a2593f; font-size: 9px; cursor: pointer; }
+.ad-remove:hover { background: #fdf5f2; }
+.ad-creative-chips { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 6px; }
+.ad-creative-chip { display: inline-flex; align-items: center; gap: 4px; padding: 2px 3px 2px 7px; border: 1px solid #e3e8df; border-radius: 12px; color: #566157; font: 9px var(--mono); }
+.ad-creative-chip button { width: 16px; height: 16px; padding: 0; border: 0; border-radius: 50%; background: #f1f3ef; color: #8b958a; font-size: 11px; line-height: 1; cursor: pointer; }
+.ad-creative-chip button:hover { background: #fbe8e1; color: #a2593f; }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }

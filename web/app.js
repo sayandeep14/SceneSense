@@ -666,6 +666,15 @@
       source.className = `ad-source-badge${brand.source === "custom" ? " ad-source-custom" : ""}`;
       source.textContent = brand.source === "custom" ? "UPLOADED" : "BUILT-IN";
       top.append(name, source);
+      if (brand.source === "custom") {
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.className = "ad-remove";
+        remove.textContent = "Remove";
+        remove.setAttribute("aria-label", `Remove ${brand.display_name} and all its ads`);
+        remove.onclick = () => removeAds(brand, null);
+        top.append(remove);
+      }
       const meta = document.createElement("p");
       meta.className = "ad-library-meta";
       meta.textContent = `${brand.category || "uncategorised"} · ${[...new Set(brand.creatives.map((creative) => creative.duration_sec))].sort((a, b) => a - b).map((seconds) => `${seconds}s`).join(" / ")}`;
@@ -699,8 +708,44 @@
         tag.textContent = `not ${value}`;
         tags.append(tag);
       }
-      item.append(top, meta, tags);
+      item.append(top, meta);
+      if (brand.source === "custom") {
+        const creatives = document.createElement("div");
+        creatives.className = "ad-creative-chips";
+        for (const creative of brand.creatives) {
+          const chip = document.createElement("span");
+          chip.className = "ad-creative-chip";
+          chip.textContent = `${creative.duration_sec}s · ${creative.language}`;
+          const remove = document.createElement("button");
+          remove.type = "button";
+          remove.textContent = "×";
+          remove.setAttribute("aria-label", `Remove the ${creative.duration_sec}-second ${brand.display_name} ad`);
+          remove.onclick = () => removeAds(brand, creative);
+          chip.append(remove);
+          creatives.append(chip);
+        }
+        item.append(creatives);
+      }
+      item.append(tags);
       list.append(item);
+    }
+  }
+
+  async function removeAds(brand, creative) {
+    const last = creative && brand.creatives.length === 1;
+    const question = creative
+      ? `Remove the ${creative.duration_sec}-second ${brand.display_name} ad?${last ? " It is this brand's only ad, so the brand is removed too." : ""}`
+      : `Remove ${brand.display_name} and all ${brand.creatives.length} of its ads?`;
+    if (!window.confirm(`${question} Breaks that use it will need a new ad; finalized manifests keep their record.`)) return;
+    const path = `/api/ads/${encodeURIComponent(brand.brand_id)}${creative ? `/${encodeURIComponent(creative.id)}` : ""}`;
+    try {
+      const response = await fetch(path, { method: "DELETE" });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || "The ad could not be removed.");
+      await loadCatalog();
+      showToast(payload.brand_removed ? `${brand.display_name} was removed from the ad library.` : "The ad was removed.");
+    } catch (error) {
+      showToast(error.message || "The ad could not be removed.");
     }
   }
 
@@ -764,6 +809,7 @@
     document.querySelector("#timeline-empty-title").textContent = job.transcript ? "Hear the story, moment by moment." : "The story comes first.";
     document.querySelector("#timeline-empty-copy").textContent = job.message;
     document.querySelector(".wave-end").textContent = formatDuration(job.media.durationSeconds);
+    renderPhaseStatus(job);
     renderTranscript(job);
     renderSceneEvidence(job);
     renderBreakDecisions(job);
@@ -789,9 +835,7 @@
     const meta = document.querySelector("#transcript-meta");
     const empty = document.querySelector("#transcript-empty");
     const list = document.querySelector("#transcript-list");
-    const retry = document.querySelector("#retry-transcription");
     panel.classList.remove("hidden");
-    retry.classList.toggle("hidden", job.status === "queued" || job.status === "processing");
     list.replaceChildren();
 
     if (job.transcript) {
@@ -1032,10 +1076,17 @@
     warning.classList.add("hidden");
     breakContext = null;
     if (!transcript) return;
-    if (!policy?.version || !candidates.every((candidate) => "scene_change" in candidate)) {
-      empty.textContent = "This saved analysis predates scene-change detection. Re-run it with current AI to plan breaks.";
+    const busy = job.status === "queued" || job.status === "processing";
+    const unfinished = busy || transcript.break_scoring_status !== "complete" || !policy?.version ||
+      !candidates.every((candidate) => "scene_change" in candidate);
+    if (unfinished) {
+      document.querySelector("#break-funnel").replaceChildren();
+      empty.textContent = busy ? "Scene analysis is running. Breaks appear here when it finishes."
+        : transcript.scene_analysis_error || transcript.break_scoring_error
+          ? `Scene analysis did not finish: ${transcript.scene_analysis_error || transcript.break_scoring_error} Use “Retry scene analysis” above; the transcript is kept.`
+          : "This analysis predates scene-change detection. Use “Re-run” on Scene analysis above; the transcript is kept.";
       empty.classList.remove("hidden");
-      document.querySelector("#break-meta").textContent = "Re-run needed.";
+      document.querySelector("#break-meta").textContent = busy ? "Analysing…" : "Scene analysis needed.";
       return;
     }
 
@@ -1287,17 +1338,23 @@
     }
   }
 
+  const libraryStatus = (job) => job.status === "processing" || job.status === "queued" ? "Analysing…"
+    : job.transcript?.break_scoring_status === "complete" ? "Analysis ready"
+      : job.transcript ? "Scene analysis needs retry" : job.status === "failed" ? "Needs retry" : "Intake ready";
+
   function addToLibrary(job) {
     const list = document.querySelector("#library-list");
     const existing = list.querySelector(`[data-job-id="${CSS.escape(job.id)}"]`);
     if (existing) {
-      existing.querySelector(".library-job-copy span").textContent = job.transcript ? "Transcript ready" : job.status === "processing" || job.status === "queued" ? "Transcribing…" : job.status === "failed" ? "Needs retry" : "Intake ready";
+      existing.querySelector(".library-job-copy span").textContent = libraryStatus(job);
       return;
     }
     list.querySelector(".library-empty")?.remove();
+    const item = document.createElement("div");
+    item.className = "library-item";
+    item.dataset.jobId = job.id;
     const button = document.createElement("button");
     button.className = "library-job";
-    button.dataset.jobId = job.id;
     button.type = "button";
     button.setAttribute("aria-label", `Open ${job.fileName}`);
     const thumb = document.createElement("span");
@@ -1308,7 +1365,7 @@
     const name = document.createElement("strong");
     name.textContent = job.fileName;
     const status = document.createElement("span");
-    status.textContent = job.transcript ? "Transcript ready" : job.status === "processing" || job.status === "queued" ? "Transcribing…" : job.status === "failed" ? "Needs retry" : "Intake ready";
+    status.textContent = libraryStatus(job);
     copy.append(name, status);
     button.append(thumb, copy);
     button.addEventListener("click", async () => {
@@ -1319,7 +1376,126 @@
         showJob(job);
       }
     });
-    list.prepend(button);
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "library-delete";
+    remove.textContent = "×";
+    remove.title = `Delete ${job.fileName}`;
+    remove.setAttribute("aria-label", remove.title);
+    remove.addEventListener("click", () => deleteVideo(job.id, job.fileName));
+    item.append(button, remove);
+    list.prepend(item);
+  }
+
+  function resetWorkspace() {
+    activeJob = null;
+    playbackPlan = null;
+    breakContext = null;
+    const video = document.querySelector("#video-preview");
+    video.removeAttribute("src");
+    video.load();
+    assetPanel.classList.add("hidden");
+    dropzone.classList.remove("hidden");
+    for (const selector of ["#transcript-panel", "#scene-evidence", "#break-decisions", "#phase-status"]) {
+      document.querySelector(selector).classList.add("hidden");
+    }
+    for (const selector of ["#all-cut-markers", "#potential-break-markers", "#break-markers"]) {
+      document.querySelector(selector).replaceChildren();
+    }
+    document.querySelector("#timeline-empty-title").textContent = "The story comes first.";
+    document.querySelector("#timeline-empty-copy").textContent = "Upload a video to get its first look.";
+    input.value = "";
+  }
+
+  async function deleteVideo(id, fileName) {
+    if (!window.confirm(`Delete “${fileName}” with its transcript, analysis, break review and manifests? This cannot be undone.`)) return;
+    try {
+      const response = await fetch(`/api/jobs/${encodeURIComponent(id)}`, { method: "DELETE" });
+      if (!response.ok) throw new Error((await response.json()).error || "The video could not be deleted.");
+    } catch (error) {
+      showToast(error.message || "The video could not be deleted.");
+      return;
+    }
+    reviewStates.delete(id);
+    const list = document.querySelector("#library-list");
+    list.querySelector(`[data-job-id="${CSS.escape(id)}"]`)?.remove();
+    if (!list.children.length) {
+      list.innerHTML = '<div class="library-empty"><span class="folder-icon">▱</span><span>Your stories will<br />show up here</span></div>';
+    }
+    if (activeJob?.id === id) resetWorkspace();
+    showToast(`${fileName} was deleted.`);
+  }
+
+  // Phase status: what has run for this video, what failed, and where a retry would start.
+  function renderPhaseStatus(job) {
+    const holder = document.querySelector("#phase-status");
+    holder.replaceChildren();
+    holder.classList.remove("hidden");
+    const busy = job.status === "queued" || job.status === "processing";
+    const transcript = job.transcript;
+    const analysed = transcript?.scene_analysis_status === "complete" && transcript?.break_scoring_status === "complete";
+    const inTranscription = busy && /transcri/.test(job.stage || "") && !transcript;
+    const phases = [
+      { name: "Upload", state: "done", detail: `${formatDuration(job.media.durationSeconds)} · ${job.media.width}×${job.media.height}` },
+      {
+        name: "Transcription", phase: "transcription",
+        state: transcript ? "done" : inTranscription || busy ? "running" : job.status === "failed" ? "failed" : "waiting",
+        detail: transcript ? `${transcript.segments.length} segments · ${transcript.model}` : job.status === "failed" ? job.message : busy ? job.message : "Not started",
+      },
+      {
+        name: "Scene analysis", phase: "scene_analysis",
+        state: analysed ? "done" : busy && !inTranscription ? "running" : transcript ? "failed" : "waiting",
+        detail: analysed ? `${transcript.shot_boundaries?.length || 0} shots · ${transcript.break_policy?.scene_change_count ?? 0} scene changes`
+          : busy && !inTranscription ? job.message
+            : transcript ? (transcript.scene_analysis_error || transcript.break_scoring_error || "Not run with the current pipeline.") : "Waits for the transcript",
+      },
+    ];
+    for (const phase of phases) {
+      const row = document.createElement("div");
+      row.className = `phase-row phase-${phase.state}`;
+      const icon = document.createElement("span");
+      icon.className = "phase-icon";
+      icon.textContent = { done: "✓", running: "…", failed: "!", waiting: "·" }[phase.state];
+      const copy = document.createElement("div");
+      copy.className = "phase-copy";
+      const name = document.createElement("strong");
+      name.textContent = phase.name;
+      const detail = document.createElement("span");
+      detail.textContent = phase.detail;
+      copy.append(name, detail);
+      row.append(icon, copy);
+      const canRun = phase.phase && !busy && (phase.phase === "transcription" || transcript);
+      if (canRun && (phase.state === "failed" || phase.state === "done")) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = phase.state === "failed" ? "primary-button" : "outline-button";
+        button.textContent = phase.state === "failed" ? `Retry ${phase.name.toLowerCase()}`
+          : phase.phase === "transcription" ? "Re-transcribe" : "Re-run";
+        button.title = phase.phase === "transcription" ? "Transcribe again, then redo scene analysis."
+          : "Keep the transcript and redo shots, signals, scene judgements, and break scoring.";
+        button.onclick = () => retryPhase(job, phase.phase, phase.state === "done");
+        row.append(button);
+      }
+      holder.append(row);
+    }
+  }
+
+  async function retryPhase(job, phase, replacing) {
+    if (replacing && !window.confirm(phase === "transcription"
+      ? "Transcribe this video again? Scene analysis and the break plan will be recomputed."
+      : "Re-run scene analysis with the saved transcript? The break plan will be recomputed; finalized manifests stay available.")) return;
+    try {
+      const response = await fetch(`/api/jobs/${encodeURIComponent(job.id)}/retry`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ from: phase }),
+      });
+      const updated = await response.json();
+      if (!response.ok) throw new Error(updated.error || "The retry could not be started.");
+      reviewStates.delete(job.id);
+      showJob(updated);
+      watchJob(updated.id);
+    } catch (error) {
+      showToast(error.message || "The retry could not be started.");
+    }
   }
 
   function uploadFile(file) {
@@ -1384,23 +1560,8 @@
   });
   input.addEventListener("change", () => uploadFile(input.files?.[0]));
   document.querySelector("#cancel-upload").addEventListener("click", () => activeRequest?.abort());
-  document.querySelector("#retry-transcription").addEventListener("click", async () => {
-    const videoURL = document.querySelector("#video-preview").src;
-    const jobId = videoURL.split("/").pop();
-    if (!jobId) return;
-    const button = document.querySelector("#retry-transcription");
-    button.disabled = true;
-    try {
-      const response = await fetch(`/api/jobs/${encodeURIComponent(jobId)}/transcribe`, { method: "POST" });
-      const job = await response.json();
-      if (!response.ok) throw new Error(job.error || "Retry could not be started.");
-      showJob(job);
-      watchJob(job.id);
-    } catch (error) {
-      showToast(error.message || "Retry could not be started.");
-    } finally {
-      button.disabled = false;
-    }
+  document.querySelector("#delete-video").addEventListener("click", () => {
+    if (activeJob) deleteVideo(activeJob.id, activeJob.fileName);
   });
   document.querySelector("#new-upload").addEventListener("click", () => {
     document.querySelector("#video-preview").removeAttribute("src");

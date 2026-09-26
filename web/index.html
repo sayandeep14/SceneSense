@@ -88,7 +88,7 @@
                   <div class="asset-file"><div class="file-type">MP4</div><div><strong id="asset-filename">story.mp4</strong><span id="asset-resolution">Media details</span></div></div>
                   <div class="meta-stat"><span>DURATION</span><strong id="asset-duration">—</strong></div>
                   <div class="meta-stat"><span>AUDIO</span><strong id="asset-audio">—</strong></div>
-                  <button id="new-upload" class="outline-button" type="button">＋ New video</button>
+                  <button id="delete-video" class="outline-button danger-button" type="button">Delete video</button><button id="new-upload" class="outline-button" type="button">＋ New video</button>
                 </div>
               </section>
 
@@ -98,6 +98,7 @@
                   <div class="panel-title-group"><h2 id="timeline-title">Story understanding</h2><p>Scenes, dialogue, and natural break moments.</p></div>
                   <span id="analysis-badge" class="coming-badge"><span class="lock-icon">⌑</span> READY FOR AI</span>
                 </div>
+                <div id="phase-status" class="phase-status hidden" aria-live="polite"></div>
                 <div class="timeline-empty">
                   <div class="wave-area">
                     <div class="wave-bars"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
@@ -110,7 +111,7 @@
                   <div class="timeline-caption"><span class="timeline-spark">✳</span><div><strong id="timeline-empty-title">The story comes first.</strong><p id="timeline-empty-copy">Upload a video to get its first look. Bengali speech and scene analysis are the next milestone.</p></div></div>
                 </div>
                 <section id="transcript-panel" class="transcript-panel hidden" aria-live="polite" aria-label="AI transcript">
-                  <div class="transcript-heading"><div><strong id="transcript-title">Bengali transcript</strong><span id="transcript-meta">AI evidence will appear here.</span></div><button id="retry-transcription" class="outline-button hidden" type="button">Re-run with current AI</button></div>
+                  <div class="transcript-heading"><div><strong id="transcript-title">Bengali transcript</strong><span id="transcript-meta">AI evidence will appear here.</span></div></div>
                   <div id="transcript-empty" class="transcript-empty">Waiting for a video.</div>
                   <ol id="transcript-list" class="transcript-list hidden"></ol>
                 </section>

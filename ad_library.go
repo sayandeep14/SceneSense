@@ -383,6 +383,84 @@ func (s *server) uploadAd(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]any{"brand": saved, "creative_id": creativeID})
 }
 
+func (s *server) deleteAdBrand(w http.ResponseWriter, r *http.Request) {
+	s.removeUploadedAds(w, r.PathValue("brandID"), "")
+}
+
+func (s *server) deleteAdCreative(w http.ResponseWriter, r *http.Request) {
+	s.removeUploadedAds(w, r.PathValue("brandID"), r.PathValue("creativeID"))
+}
+
+// removeUploadedAds deletes one uploaded creative, or a whole uploaded brand when creativeID is empty.
+// A brand whose last creative is removed disappears too. Built-in brands cannot be removed.
+func (s *server) removeUploadedAds(w http.ResponseWriter, brandID, creativeID string) {
+	s.adLibraryMu.Lock()
+	defer s.adLibraryMu.Unlock()
+	builtin, err := loadBrandCatalog(s.brandsPath)
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, err.Error())
+		return
+	}
+	if _, isBuiltin := findBrand(builtin, brandID); isBuiltin {
+		writeError(w, http.StatusForbidden, "Built-in catalogue brands cannot be removed.")
+		return
+	}
+	custom, err := readCustomCatalog(s.customCatalogPath())
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, err.Error())
+		return
+	}
+	index := -1
+	for i, brand := range custom {
+		if brand.BrandID == brandID {
+			index = i
+		}
+	}
+	if index < 0 {
+		writeError(w, http.StatusNotFound, "That uploaded brand does not exist.")
+		return
+	}
+	brand := custom[index]
+	brand.Source = brandSourceCustom
+	var removed []CatalogCreative
+	if creativeID == "" {
+		removed = brand.Creatives
+	} else {
+		kept := []CatalogCreative{}
+		for _, creative := range brand.Creatives {
+			if creative.ID == creativeID {
+				removed = append(removed, creative)
+			} else {
+				kept = append(kept, creative)
+			}
+		}
+		if len(removed) == 0 {
+			writeError(w, http.StatusNotFound, "That ad does not exist for this brand.")
+			return
+		}
+		custom[index].Creatives = kept
+	}
+	brandRemoved := creativeID == "" || len(custom[index].Creatives) == 0
+	if brandRemoved {
+		custom = append(custom[:index], custom[index+1:]...)
+	}
+	if err := s.writeCustomCatalog(custom); err != nil {
+		s.logger.Error("persist ad library after removal", "error", err)
+		writeError(w, http.StatusInternalServerError, "Could not update the ad library.")
+		return
+	}
+	for _, creative := range removed {
+		if err := os.Remove(s.creativeFilePath(brand, creative.SourceURL)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			s.logger.Warn("delete uploaded ad file", "creative_id", creative.ID, "error", err)
+		}
+	}
+	if brandRemoved {
+		_ = os.Remove(filepath.Join(s.adLibraryDir, "ads", brandID))
+	}
+	s.logger.Info("uploaded ads removed", "brand_id", brandID, "creatives", len(removed), "brand_removed", brandRemoved)
+	writeJSON(w, http.StatusOK, map[string]any{"removed_creatives": len(removed), "brand_removed": brandRemoved})
+}
+
 // Scene/brand matching. AI fit scores are used when the scene model scored the brand; brands added
 // after analysis get a deterministic context match. Negative contexts are always enforced here.
 

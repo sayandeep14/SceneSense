@@ -250,6 +250,10 @@ func (s *server) routes() http.Handler {
 	mux.HandleFunc("GET /api/jobs/{id}/ad-suggestions", s.adSuggestions)
 	mux.HandleFunc("POST /api/jobs", s.createJob)
 	mux.HandleFunc("POST /api/jobs/{id}/transcribe", s.retryTranscription)
+	mux.HandleFunc("POST /api/jobs/{id}/retry", s.retryPhase)
+	mux.HandleFunc("DELETE /api/jobs/{id}", s.deleteJob)
+	mux.HandleFunc("DELETE /api/ads/{brandID}", s.deleteAdBrand)
+	mux.HandleFunc("DELETE /api/ads/{brandID}/{creativeID}", s.deleteAdCreative)
 	mux.HandleFunc("POST /api/jobs/{id}/playback-plan", s.createPlaybackPlan)
 	mux.HandleFunc("GET /api/jobs/{id}/vmap.xml", s.getVMAP)
 	mux.HandleFunc("GET /api/jobs/{id}/vast/{breakID}", s.getVAST)
@@ -288,11 +292,27 @@ func (s *server) withDemoAccess(next http.Handler) http.Handler {
 }
 
 func (s *server) retryTranscription(w http.ResponseWriter, r *http.Request) {
+	s.startAnalysis(w, r.PathValue("id"), "")
+}
+
+// retryPhase restarts analysis from transcription or from scene analysis, reusing the saved transcript.
+func (s *server) retryPhase(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<10)
+	var body struct {
+		From string `json:"from"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || (body.From != "transcription" && body.From != "scene_analysis") {
+		writeError(w, http.StatusBadRequest, `Choose where to retry from: "transcription" or "scene_analysis".`)
+		return
+	}
+	s.startAnalysis(w, r.PathValue("id"), body.From)
+}
+
+func (s *server) startAnalysis(w http.ResponseWriter, id, fromPhase string) {
 	if !s.aiEnabled {
 		writeError(w, http.StatusServiceUnavailable, "Bengali transcription is not configured on this service.")
 		return
 	}
-	id := r.PathValue("id")
 	s.jobsMu.Lock()
 	job, exists := s.jobs[id]
 	if !exists {
@@ -305,15 +325,26 @@ func (s *server) retryTranscription(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, job)
 		return
 	}
+	if fromPhase == "scene_analysis" && (job.Transcript == nil || job.Transcript.Model == "") {
+		s.jobsMu.Unlock()
+		writeError(w, http.StatusConflict, "There is no saved transcript for this video yet. Retry transcription instead.")
+		return
+	}
 	job.Status, job.Stage, job.Progress = "queued", "transcription_queued", 20
 	job.Message = "Bengali speech transcription is queued."
-	job.Transcript = nil
+	if fromPhase == "transcription" {
+		job.Transcript = nil
+	} else {
+		// Keep the transcript visible; everything after it is recomputed.
+		job.Transcript = asrOnly(job.Transcript)
+		job.Stage, job.Message = "analysis_queued", "Analysis is queued; the saved transcript will be reused when it matches."
+	}
 	s.jobs[id] = job
 	if err := s.persistJob(job); err != nil {
 		s.logger.Error("persist retried job state", "job_id", id, "error", err)
 	}
 	s.jobsMu.Unlock()
-	go s.transcribeJob(id)
+	go s.transcribeJob(id, fromPhase)
 	writeJSON(w, http.StatusAccepted, job)
 }
 
@@ -412,7 +443,7 @@ func (s *server) createJob(w http.ResponseWriter, r *http.Request) {
 			if err := s.persistJob(existing); err != nil {
 				s.logger.Error("persist version-invalidated job", "job_id", existingID, "error", err)
 			}
-			go s.transcribeJob(existingID)
+			go s.transcribeJob(existingID, "")
 		}
 		s.jobsMu.Unlock()
 		writeJSON(w, http.StatusOK, existing)
@@ -465,9 +496,60 @@ func (s *server) createJob(w http.ResponseWriter, r *http.Request) {
 	s.byHash[contentHash] = id
 	s.jobsMu.Unlock()
 	if s.aiEnabled {
-		go s.transcribeJob(id)
+		go s.transcribeJob(id, "")
 	}
 	writeJSON(w, http.StatusCreated, job)
+}
+
+// deleteJob removes a video with its analysis, reviews, manifests, and cached AI results.
+func (s *server) deleteJob(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	s.jobsMu.Lock()
+	job, exists := s.jobs[id]
+	if !exists {
+		s.jobsMu.Unlock()
+		writeError(w, http.StatusNotFound, "Analysis job not found.")
+		return
+	}
+	if job.Status == "queued" || job.Status == "processing" {
+		s.jobsMu.Unlock()
+		writeError(w, http.StatusConflict, "This video is being analysed. Wait for it to finish before deleting it.")
+		return
+	}
+	delete(s.jobs, id)
+	if s.byHash[job.ContentHash] == id {
+		delete(s.byHash, job.ContentHash)
+	}
+	s.jobsMu.Unlock()
+
+	for _, path := range []string{s.uploadPath(id), s.jobArtifactPath(id)} {
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			s.logger.Warn("delete job file", "job_id", id, "error", err)
+		}
+	}
+	if job.ContentHash != "" {
+		s.removeCachedAnalysis(job.ContentHash)
+	}
+	s.logger.Info("job deleted", "job_id", id)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// removeCachedAnalysis deletes worker caches (analysis results and saved transcripts) for one video.
+func (s *server) removeCachedAnalysis(contentHash string) {
+	paths, _ := filepath.Glob(filepath.Join(s.uploadDir, "analysis-*.json"))
+	transcripts, _ := filepath.Glob(filepath.Join(s.uploadDir, "transcript-*.json"))
+	for _, path := range append(paths, transcripts...) {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		var cached struct {
+			ContentHash string `json:"content_hash"`
+		}
+		if json.Unmarshal(data, &cached) == nil && cached.ContentHash == contentHash {
+			_ = os.Remove(path)
+		}
+	}
 }
 
 func (s *server) getJob(w http.ResponseWriter, r *http.Request) {

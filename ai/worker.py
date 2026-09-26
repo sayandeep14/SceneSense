@@ -630,9 +630,35 @@ def _asr_label() -> str:
     return f"sarvam/{_provider_model(provider)}" if provider == "sarvam" else _provider_model(provider)
 
 
-def _reusable_transcript(work_dir: Path, content_hash: str) -> dict[str, Any] | None:
-    """Reuse the Bengali transcript from any earlier analysis of this video with the same ASR model."""
-    fields = ("language", "duration", "text", "segments", "model", "timestamp_adjustments")
+TRANSCRIPT_FIELDS = ("language", "duration", "text", "segments", "model", "timestamp_adjustments")
+
+
+def _transcript_cache_path(work_dir: Path, content_hash: str) -> Path:
+    label = hashlib.sha256(_asr_label().encode("utf-8")).hexdigest()[:12]
+    return work_dir / f"transcript-{content_hash[:16]}-{label}.json"
+
+
+def _save_transcript(work_dir: Path, content_hash: str, transcript: dict[str, Any]) -> None:
+    """Save the ASR result as soon as it exists, so a later failure never costs another transcription."""
+    _write_cache(_transcript_cache_path(work_dir, content_hash), {
+        "content_hash": content_hash, "asr": _asr_label(),
+        "transcript": {field: transcript[field] for field in TRANSCRIPT_FIELDS if field in transcript},
+    })
+
+
+def _reusable_transcript(work_dir: Path, content_hash: str, supplied: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    """Reuse a Bengali transcript for this video from the same ASR model: the one the server supplied,
+    the saved transcript file, or any earlier full analysis."""
+    fields = TRANSCRIPT_FIELDS
+    if (isinstance(supplied, dict) and supplied.get("model") == _asr_label()
+            and isinstance(supplied.get("segments"), list)):
+        return _validate_transcript({**supplied}, supplied["model"])
+    try:
+        saved = json.loads(_transcript_cache_path(work_dir, content_hash).read_text(encoding="utf-8"))
+        if saved.get("content_hash") == content_hash and saved.get("asr") == _asr_label():
+            return saved["transcript"]
+    except (OSError, json.JSONDecodeError, KeyError, AttributeError):
+        pass
     paths = sorted(work_dir.glob("analysis-*.json"), key=lambda path: path.stat().st_mtime, reverse=True)
     for path in paths:
         try:
@@ -835,12 +861,19 @@ def run(request: dict[str, Any]) -> dict[str, Any]:
     brand_catalog_hash = _file_sha256(brands_path)
     cache_key = _cache_key(content_hash, brand_catalog_hash=brand_catalog_hash)
     cache_path = work_dir / f"analysis-{cache_key}.json"
-    cached = _read_cache(cache_path, content_hash, cache_key)
+    from_phase = str(request.get("from_phase", "")).strip()
+    if from_phase not in ("", "transcription", "scene_analysis"):
+        raise WorkerError("Unknown analysis phase to retry from.")
+    cached = _read_cache(cache_path, content_hash, cache_key) if not from_phase else None
     if cached is not None:
         return cached
 
     work_dir.mkdir(parents=True, exist_ok=True)
-    transcript = _reusable_transcript(work_dir, content_hash)
+    transcript = None
+    if from_phase != "transcription":
+        transcript = _reusable_transcript(work_dir, content_hash, request.get("transcript"))
+    if transcript is None and from_phase == "scene_analysis":
+        raise WorkerError("No saved transcript from the current ASR model matches this video; retry transcription.")
     evidence_cache_hit = transcript is not None
     if transcript is None:
         progress("transcribing_bengali_speech", 28, "Preparing audio and transcribing Bengali speech.")
@@ -849,6 +882,7 @@ def run(request: dict[str, Any]) -> dict[str, Any]:
             transcript = transcribe(audio_path, video_path.name)
         finally:
             audio_path.unlink(missing_ok=True)
+        _save_transcript(work_dir, content_hash, transcript)
     else:
         progress("transcribing_bengali_speech", 32, "Reusing the saved Bengali transcript for this video.")
 
