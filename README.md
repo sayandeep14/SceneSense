@@ -49,6 +49,8 @@ go build ./...
 
 The end-to-end media intake test uses FFmpeg to generate a short video fixture. It skips when FFmpeg or ffprobe is unavailable; the container includes both tools.
 
+For a fresh local demo, stop the app and run `go run ./cmd/reset-demo --dir data/uploads` to preview exactly which generated videos, job sidecars, AI caches, and observer snapshot would be moved. Add `--execute` to archive those files into a timestamped `.reset-backup-*` folder inside `uploads`; add `--include-ads` only if uploaded ads should also be reset. Source assets, `.env`, and unrelated files are not touched. This is a local maintenance command, not an unauthenticated production endpoint.
+
 ## Container
 
 ```sh
