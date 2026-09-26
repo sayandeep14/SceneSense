@@ -19,6 +19,8 @@ import wave
 from pathlib import Path
 from typing import Any
 
+from breaks import BREAK_PROMPT_VERSION, BreakScoringError, generate_candidates, score_candidates
+
 API_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
 SARVAM_API_URL = "https://api.sarvam.ai/speech-to-text"
 OPENAI_API_URL = "https://api.openai.com/v1/responses"
@@ -27,8 +29,10 @@ SARVAM_MODEL = "saaras:v4"
 SARVAM_CHUNK_SECONDS = 25
 ASR_PROVIDER = os.environ.get("ASR_PROVIDER", "groq").strip().lower() or "groq"
 SCENE_MODEL = os.environ.get("OPENAI_VISION_MODEL", "gpt-4o-mini").strip() or "gpt-4o-mini"
+BREAK_MODEL = os.environ.get("OPENAI_BREAK_MODEL", SCENE_MODEL).strip() or SCENE_MODEL
 SCENE_PROMPT_VERSION = "scene-evidence-v2"
-PIPELINE_CACHE_VERSION = "phase2-sarvam-asr-v1"
+PIPELINE_CACHE_VERSION = "phase3-break-v1"
+PHASE2_CACHE_VERSION = "phase2-sarvam-asr-v1"
 CUT_DETECTION_THRESHOLD = 0.30
 MAX_AUDIO_BYTES = 25 * 1024 * 1024
 MAX_SCENE_FRAMES = 16
@@ -546,14 +550,18 @@ def detect_shot_boundaries(video_path: Path, duration: float) -> list[float]:
     return boundaries[:1000]
 
 
-def _cache_key(content_hash: str) -> str:
+def _cache_key(content_hash: str, *, phase2: bool = False) -> str:
     provider = _asr_provider()
-    parts = (
+    parts = [
         content_hash, provider, _provider_model(provider), SCENE_MODEL, SCENE_PROMPT_VERSION,
-        PIPELINE_CACHE_VERSION, str(MAX_SCENE_FRAMES), str(CUT_DETECTION_THRESHOLD),
-        str(MAX_SHOT_BOUNDARIES_IN_PROMPT),
+    ]
+    if not phase2:
+        parts.extend((BREAK_MODEL, BREAK_PROMPT_VERSION))
+    parts.extend((
+        PHASE2_CACHE_VERSION if phase2 else PIPELINE_CACHE_VERSION,
+        str(MAX_SCENE_FRAMES), str(CUT_DETECTION_THRESHOLD), str(MAX_SHOT_BOUNDARIES_IN_PROMPT),
         "silencedetect:-32dB:0.45s",
-    )
+    ))
     return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
 
 
@@ -819,55 +827,77 @@ def run(request: dict[str, Any]) -> dict[str, Any]:
     cached = _read_cache(cache_path, content_hash, cache_key)
     if cached is not None:
         return cached
-    audio_path = extract_audio(video_path, work_dir)
-    try:
-        transcript = transcribe(audio_path, video_path.name)
-    finally:
-        audio_path.unlink(missing_ok=True)
+    phase2_key = _cache_key(content_hash, phase2=True)
+    phase2_evidence = _read_cache(work_dir / f"analysis-{phase2_key}.json", content_hash, phase2_key)
+    if phase2_evidence is not None:
+        output = {**phase2_evidence, "cache_key": cache_key, "cache_hit": False, "evidence_cache_hit": True}
+    else:
+        audio_path = extract_audio(video_path, work_dir)
+        try:
+            transcript = transcribe(audio_path, video_path.name)
+        finally:
+            audio_path.unlink(missing_ok=True)
 
-    output: dict[str, Any] = {
-        **transcript,
-        "scenes": [],
-        "silence_intervals": [],
-        "pause_detection_status": "unavailable",
-        "pause_detection_error": "",
-        "scene_analysis_status": "unavailable",
-        "shot_boundaries": [],
-        "shot_detection_status": "unavailable",
-        "shot_detection_error": "",
-        "scene_model": SCENE_MODEL,
-        "scene_prompt_version": SCENE_PROMPT_VERSION,
-        "scene_analysis_error": "",
-        "content_hash": content_hash,
-        "cache_key": cache_key,
-        "cache_hit": False,
-    }
-    try:
-        output["silence_intervals"] = detect_silences(video_path, transcript["duration"])
-        output["pause_detection_status"] = "complete"
-    except WorkerError as exc:
-        output["pause_detection_error"] = str(exc)
+        output: dict[str, Any] = {
+            **transcript,
+            "scenes": [],
+            "silence_intervals": [],
+            "pause_detection_status": "unavailable",
+            "pause_detection_error": "",
+            "scene_analysis_status": "unavailable",
+            "shot_boundaries": [],
+            "shot_detection_status": "unavailable",
+            "shot_detection_error": "",
+            "scene_model": SCENE_MODEL,
+            "scene_prompt_version": SCENE_PROMPT_VERSION,
+            "scene_analysis_error": "",
+            "content_hash": content_hash,
+            "cache_key": cache_key,
+            "cache_hit": False,
+            "evidence_cache_hit": False,
+        }
+        try:
+            output["silence_intervals"] = detect_silences(video_path, transcript["duration"])
+            output["pause_detection_status"] = "complete"
+        except WorkerError as exc:
+            output["pause_detection_error"] = str(exc)
 
-    try:
-        output["shot_boundaries"] = detect_shot_boundaries(video_path, transcript["duration"])
-        output["shot_detection_status"] = "complete"
-    except WorkerError as exc:
-        output["shot_detection_error"] = str(exc)
+        try:
+            output["shot_boundaries"] = detect_shot_boundaries(video_path, transcript["duration"])
+            output["shot_detection_status"] = "complete"
+        except WorkerError as exc:
+            output["shot_detection_error"] = str(exc)
 
-    try:
-        frames = sample_frames(video_path, work_dir, transcript["duration"])
-        scenes = analyze_scenes(
-            frames, transcript, output["silence_intervals"], transcript["duration"],
-            output["shot_boundaries"],
-        )
-        output.update({
-            "scenes": scenes,
-            "scene_analysis_status": "complete",
-        })
-    except WorkerError as exc:
-        output["scene_analysis_error"] = str(exc)
-    work_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            frames = sample_frames(video_path, work_dir, transcript["duration"])
+            scenes = analyze_scenes(
+                frames, transcript, output["silence_intervals"], transcript["duration"],
+                output["shot_boundaries"],
+            )
+            output.update({
+                "scenes": scenes,
+                "scene_analysis_status": "complete",
+            })
+        except WorkerError as exc:
+            output["scene_analysis_error"] = str(exc)
+
+    output["break_model"] = BREAK_MODEL
+    output["break_prompt_version"] = BREAK_PROMPT_VERSION
+    output["break_candidates"] = []
+    output["break_scoring_status"] = "unavailable"
+    output["break_scoring_error"] = ""
     if output["scene_analysis_status"] == "complete":
+        proposals = generate_candidates(output)
+        output["break_candidates"] = proposals
+        try:
+            output["break_candidates"] = score_candidates(proposals, BREAK_MODEL)
+            output["break_scoring_status"] = "complete"
+        except BreakScoringError as exc:
+            output["break_scoring_error"] = str(exc)
+    else:
+        output["break_scoring_error"] = "Scene evidence is unavailable, so break scoring was skipped."
+    work_dir.mkdir(parents=True, exist_ok=True)
+    if output["scene_analysis_status"] == "complete" and output["break_scoring_status"] == "complete":
         _write_cache(cache_path, {"content_hash": content_hash, "cache_key": cache_key, "result": output})
     return output
 

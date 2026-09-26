@@ -31,7 +31,8 @@ const (
 	defaultUploadRoot = "data/uploads"
 	maxUploadBytes    = 500 << 20
 	scenePromptVer    = "scene-evidence-v2"
-	analysisVersion   = "phase2-sarvam-asr-v1"
+	breakPromptVer    = "break-naturalness-v1"
+	analysisVersion   = "phase3-break-v1"
 )
 
 type MediaInfo struct {
@@ -179,12 +180,27 @@ func currentAnalysisCacheKey(contentHash string) string {
 	if sceneModel == "" {
 		sceneModel = "gpt-4o-mini"
 	}
+	breakModel := strings.TrimSpace(os.Getenv("OPENAI_BREAK_MODEL"))
+	if breakModel == "" {
+		breakModel = sceneModel
+	}
 	parts := strings.Join([]string{
-		contentHash, provider, asrModel, sceneModel, scenePromptVer, analysisVersion,
-		"16", "0.30", "300", "silencedetect:-32dB:0.45s",
+		contentHash, provider, asrModel, sceneModel, scenePromptVer, breakModel, breakPromptVer, analysisVersion,
+		"16", "0.3", "300", "silencedetect:-32dB:0.45s",
 	}, "|")
 	sum := sha256.Sum256([]byte(parts))
 	return hex.EncodeToString(sum[:])
+}
+
+func asrConfigured() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("ASR_PROVIDER"))) {
+	case "", "groq":
+		return strings.TrimSpace(os.Getenv("GROQ_API_KEY")) != ""
+	case "sarvam":
+		return strings.TrimSpace(os.Getenv("SARVAM_API_KEY")) != ""
+	default:
+		return false
+	}
 }
 
 func (s *server) routes() http.Handler {
@@ -522,9 +538,9 @@ func main() {
 		os.Exit(1)
 	}
 	app := newServer(logger, uploadDir)
-	app.aiEnabled = strings.TrimSpace(os.Getenv("GROQ_API_KEY")) != ""
+	app.aiEnabled = asrConfigured()
 	if !app.aiEnabled {
-		logger.Warn("GROQ_API_KEY is not set; uploads will stop after media intake")
+		logger.Warn("selected ASR provider is not configured; uploads will stop after media intake")
 	}
 	httpServer := &http.Server{Addr: addr, Handler: app.routes(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Minute, WriteTimeout: 10 * time.Minute, IdleTimeout: 60 * time.Second}
 	logger.Info("server starting", "addr", addr, "upload_dir", uploadDir)

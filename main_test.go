@@ -22,10 +22,12 @@ func TestAnalysisCacheKeyIncludesConfiguredPipelineVersions(t *testing.T) {
 	t.Setenv("GROQ_ASR_MODEL", "whisper-large-v3-turbo")
 	t.Setenv("SARVAM_ASR_MODEL", "")
 	t.Setenv("OPENAI_VISION_MODEL", "gpt-4o-mini")
+	t.Setenv("OPENAI_BREAK_MODEL", "")
 	contentHash := "fixture-content-hash"
 	parts := strings.Join([]string{
 		contentHash, "groq", "whisper-large-v3-turbo", "gpt-4o-mini", "scene-evidence-v2",
-		"phase2-sarvam-asr-v1", "16", "0.30", "300", "silencedetect:-32dB:0.45s",
+		"gpt-4o-mini", "break-naturalness-v1", "phase3-break-v1",
+		"16", "0.3", "300", "silencedetect:-32dB:0.45s",
 	}, "|")
 	expected := sha256.Sum256([]byte(parts))
 	first := currentAnalysisCacheKey(contentHash)
@@ -45,11 +47,48 @@ func TestAnalysisCacheKeyIncludesConfiguredPipelineVersions(t *testing.T) {
 	}
 	parts = strings.Join([]string{
 		contentHash, "sarvam", "saaras:v4", "gpt-4o-mini", "scene-evidence-v2",
-		"phase2-sarvam-asr-v1", "16", "0.30", "300", "silencedetect:-32dB:0.45s",
+		"gpt-4o-mini", "break-naturalness-v1", "phase3-break-v1",
+		"16", "0.3", "300", "silencedetect:-32dB:0.45s",
 	}, "|")
 	expected = sha256.Sum256([]byte(parts))
 	if sarvamKey != hex.EncodeToString(expected[:]) {
 		t.Fatalf("Sarvam cache key = %q; expected Python-compatible key %q", sarvamKey, hex.EncodeToString(expected[:]))
+	}
+	t.Setenv("OPENAI_BREAK_MODEL", "another-break-model")
+	if currentAnalysisCacheKey(contentHash) == sarvamKey {
+		t.Fatal("cache key did not change after the break model changed")
+	}
+}
+
+func TestGoCacheKeyMatchesPythonWorker(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 is not installed")
+	}
+	t.Setenv("ASR_PROVIDER", "sarvam")
+	t.Setenv("SARVAM_ASR_MODEL", "saaras:v4")
+	t.Setenv("OPENAI_VISION_MODEL", "gpt-4o-mini")
+	t.Setenv("OPENAI_BREAK_MODEL", "gpt-4o-mini")
+	command := exec.Command(python, "-c", "import sys; sys.path.insert(0, 'ai'); import worker; print(worker._cache_key('fixture-hash'))")
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("python cache key failed: %v: %s", err, output)
+	}
+	if got, want := currentAnalysisCacheKey("fixture-hash"), strings.TrimSpace(string(output)); got != want {
+		t.Fatalf("Go cache key %q differs from Python key %q", got, want)
+	}
+}
+
+func TestSelectedASRProviderControlsAvailability(t *testing.T) {
+	t.Setenv("GROQ_API_KEY", "")
+	t.Setenv("SARVAM_API_KEY", "sarvam-test-key")
+	t.Setenv("ASR_PROVIDER", "sarvam")
+	if !asrConfigured() {
+		t.Fatal("Sarvam-only configuration was disabled")
+	}
+	t.Setenv("ASR_PROVIDER", "groq")
+	if asrConfigured() {
+		t.Fatal("Groq was enabled without its key")
 	}
 }
 

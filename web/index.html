@@ -99,8 +99,9 @@
                   <span id="analysis-badge" class="coming-badge"><span class="lock-icon">⌑</span> READY FOR AI</span>
                 </div>
                 <div class="timeline-empty">
-                  <div class="wave-area" aria-hidden="true">
+                  <div class="wave-area">
                     <div class="wave-bars"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+                    <div id="break-markers" class="break-markers hidden"></div>
                     <span class="wave-start">00:00</span><span class="wave-end">—:—</span>
                   </div>
                   <div class="timeline-caption"><span class="timeline-spark">✳</span><div><strong id="timeline-empty-title">The story comes first.</strong><p id="timeline-empty-copy">Upload a video to get its first look. Bengali speech and scene analysis are the next milestone.</p></div></div>
@@ -115,6 +116,13 @@
                   <div id="scene-warning" class="scene-warning hidden" role="status"></div>
                   <div id="pause-evidence" class="pause-evidence hidden"><strong>Low-audio pauses</strong><div id="pause-list" class="pause-list"></div></div>
                   <ol id="scene-list" class="scene-list"></ol>
+                </section>
+                <section id="break-decisions" class="break-decisions hidden" aria-label="Break decisions">
+                  <div class="break-heading"><div><strong>Safe break opportunities</strong><span id="break-meta">Waiting for policy review.</span></div><span class="break-policy-tag">AI + POLICY</span></div>
+                  <div id="break-warning" class="scene-warning hidden" role="status"></div>
+                  <div class="break-legend"><span><i class="legend-dot accepted"></i> Selected</span><span><i class="legend-dot rejected"></i> Withheld</span></div>
+                  <p id="break-empty" class="break-empty hidden"></p>
+                  <ol id="break-list" class="break-list"></ol>
                 </section>
                 <div class="phase-strip"><div class="phase-item phase-current"><span class="phase-check">✓</span><span>Media intake</span></div><span class="phase-connector"></span><div class="phase-item"><span class="phase-number">02</span><span>Scene & speech AI</span></div><span class="phase-connector"></span><div class="phase-item"><span class="phase-number">03</span><span>Safe ad moments</span></div><span class="phase-connector"></span><div class="phase-item"><span class="phase-number">04</span><span>Play & resume</span></div></div>
               </section>

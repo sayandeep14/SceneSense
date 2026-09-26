@@ -7,9 +7,101 @@ from pathlib import Path
 from unittest.mock import patch
 
 import worker
+import breaks
 
 
 class WorkerTests(unittest.TestCase):
+    def test_break_candidates_use_actual_pause_and_scene_evidence(self):
+        evidence = {
+            "duration": 80,
+            "scenes": [{"start": 0, "end": 40, "summary": "The conversation ends."},
+                       {"start": 40, "end": 80, "summary": "A quiet walk begins."}],
+            "segments": [{"start": 10, "end": 39.8, "text": "কথা শেষ।"},
+                         {"start": 42, "end": 50, "text": "চলো।"}],
+            "silence_intervals": [{"start": 39.9, "end": 41.1, "duration": 1.2}],
+            "shot_boundaries": [40.2],
+        }
+        candidates = breaks.generate_candidates(evidence)
+        self.assertEqual(len(candidates), 1)
+        self.assertAlmostEqual(candidates[0]["time"], 40.5)
+        self.assertEqual(set(candidates[0]["signals"]),
+                         {"scene_end", "low_audio_pause", "shot_cut", "sentence_end"})
+        self.assertIn("কথা শেষ।", candidates[0]["before_text"])
+
+    def test_break_scoring_requires_all_ids_and_valid_ranges(self):
+        candidates = breaks.generate_candidates({
+            "duration": 80, "scenes": [], "segments": [],
+            "silence_intervals": [{"start": 39, "end": 41, "duration": 2}],
+            "shot_boundaries": [],
+        })
+
+        class FakeResponse:
+            def __init__(self, scores):
+                self.scores = scores
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self, _limit):
+                return json.dumps({"output": [{"content": [{"type": "output_text", "text": json.dumps({"scores": self.scores})}]}]}).encode()
+
+        score = {"candidate_id": candidates[0]["candidate_id"], "naturalness": 0.9,
+                 "disruption_risk": 0.1, "confidence": 0.8, "reason": "A calm pause."}
+        with patch.dict("os.environ", {"OPENAI_API_KEY": "unit-test-key"}):
+            with patch("breaks.urllib.request.urlopen", return_value=FakeResponse([score])) as request:
+                result = breaks.score_candidates(candidates, "fixture-model")
+            self.assertEqual(result[0]["naturalness"], 0.9)
+            self.assertEqual(result[0]["ai_model"], "fixture-model")
+            sent = json.loads(request.call_args.args[0].data)
+            self.assertEqual(sent["text"]["format"]["name"], "break_scores")
+            with patch("breaks.urllib.request.urlopen", return_value=FakeResponse([{**score, "naturalness": 1.2}])):
+                with self.assertRaisesRegex(breaks.BreakScoringError, "outside 0–1"):
+                    breaks.score_candidates(candidates, "fixture-model")
+            with patch("breaks.urllib.request.urlopen", return_value=FakeResponse([])):
+                with self.assertRaisesRegex(breaks.BreakScoringError, "omitted"):
+                    breaks.score_candidates(candidates, "fixture-model")
+
+    def test_phase3_reuses_phase2_evidence_without_retranscription(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            video = root / "fixture.mp4"
+            video.write_bytes(b"synthetic-media")
+            digest = worker._file_sha256(video)
+            phase2_key = worker._cache_key(digest, phase2=True)
+            evidence = {
+                "duration": 80, "language": "bengali", "text": "কথা শেষ।", "model": "sarvam/saaras:v4",
+                "segments": [{"start": 10, "end": 39, "text": "কথা শেষ।"}],
+                "scenes": [{"scene_id": "one", "start": 0, "end": 80, "summary": "A calm talk",
+                            "dialogue_state": "completed_thought", "confidence": 0.9,
+                            "sensitive_contexts": [], "activities": [], "tone": [], "evidence": []}],
+                "silence_intervals": [{"start": 39.5, "end": 41.5, "duration": 2}],
+                "shot_boundaries": [], "scene_analysis_status": "complete",
+                "content_hash": digest, "cache_key": phase2_key, "cache_hit": False,
+            }
+            worker._write_cache(root / f"analysis-{phase2_key}.json", {
+                "content_hash": digest, "cache_key": phase2_key, "result": evidence,
+            })
+            brands = Path(__file__).resolve().parent.parent / "assets" / "brands.json"
+
+            def fake_score(candidates, model):
+                return [{**item, "naturalness": 0.9, "disruption_risk": 0.1,
+                         "confidence": 0.9, "ai_reason": "Calm pause.",
+                         "ai_model": model, "ai_prompt_version": breaks.BREAK_PROMPT_VERSION}
+                        for item in candidates]
+
+            with patch("worker.extract_audio", side_effect=AssertionError("ASR should be reused")):
+                with patch("worker.score_candidates", side_effect=fake_score):
+                    result = worker.run({"video_path": str(video), "work_dir": str(root),
+                                         "brands_path": str(brands), "content_hash": digest})
+            self.assertTrue(result["evidence_cache_hit"])
+            self.assertEqual(result["break_scoring_status"], "complete")
+            self.assertEqual(len(result["break_candidates"]), 1)
+            self.assertNotEqual(result["cache_key"], phase2_key)
+            self.assertTrue((root / f"analysis-{result['cache_key']}.json").exists())
+
     def test_loads_hackathon_brand_catalogue(self):
         catalog_path = Path(__file__).resolve().parent.parent / "assets" / "brands.json"
         brands = worker.load_brand_catalog(catalog_path)

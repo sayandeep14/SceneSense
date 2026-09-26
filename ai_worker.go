@@ -66,6 +66,13 @@ type Transcript struct {
 	ContentHash          string              `json:"content_hash"`
 	CacheKey             string              `json:"cache_key"`
 	CacheHit             bool                `json:"cache_hit"`
+	EvidenceCacheHit     bool                `json:"evidence_cache_hit"`
+	BreakModel           string              `json:"break_model"`
+	BreakPromptVersion   string              `json:"break_prompt_version"`
+	BreakScoringStatus   string              `json:"break_scoring_status"`
+	BreakScoringError    string              `json:"break_scoring_error,omitempty"`
+	BreakCandidates      []BreakCandidate    `json:"break_candidates"`
+	BreakPolicy          BreakPolicyInfo     `json:"break_policy"`
 }
 
 type workerRequest struct {
@@ -105,6 +112,7 @@ func runAIWorker(ctx context.Context, pythonBin, workerPath, videoPath, workDir,
 	if err := validateTranscriptGo(transcript); err != nil {
 		return Transcript{}, err
 	}
+	applyBreakPolicy(&transcript)
 	return transcript, nil
 }
 
@@ -158,6 +166,9 @@ func validateTranscriptGo(transcript Transcript) error {
 		}
 		previousPauseEnd = pause.End
 	}
+	if err := validateBreakCandidates(transcript); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -198,6 +209,10 @@ func (s *server) transcribeJob(id string) {
 		if transcript.SceneAnalysisStatus == "complete" {
 			job.Stage, job.Progress = "scene_evidence_complete", 70
 			job.Message = "Bengali transcript, low-audio pauses, and AI scene evidence are ready."
+			if transcript.BreakScoringStatus == "complete" {
+				job.Stage, job.Progress = "break_policy_complete", 80
+				job.Message = fmt.Sprintf("AI break scoring and safety policy are ready: %d safe break(s).", transcript.BreakPolicy.AcceptedCount)
+			}
 			if transcript.PauseDetectionError != "" {
 				job.Message = "Bengali transcript and AI scene evidence are ready. " + transcript.PauseDetectionError
 			}

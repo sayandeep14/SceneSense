@@ -4,7 +4,7 @@ An AI-first contextual ad placement MVP for Bengali video. This repository is be
 
 ## Current release
 
-**Phase 0 complete; Phase 1 complete; Phase 2 evidence slice implemented and locally verified.** Go handles uploads, jobs, and deterministic validation. The standard-library Python worker supports Bengali ASR via Groq Whisper or Sarvam Saaras v4, detects low-audio intervals and FFmpeg shot cuts, samples at most 16 representative frames, and asks OpenAI for schema-constrained scene evidence. Sarvam audio is extracted as mono 16 kHz WAV and transcribed in 25-second chunks to stay under its REST limit. Scene windows use nearby cut evidence, and the UI shows seekable transcript, scenes, confidence, pauses, and shot cuts. Private analysis cache entries are keyed by source-content hash, selected ASR provider/model, scene model, prompt version, and analysis/detector versions. Job and AI evidence JSON sidecars survive service restarts. Staging remains pending repository/deployment setup; break scoring, brand matching, and VMAP/playback remain ahead.
+**Phases 0–2 are deployed; Phase 3 break scoring and safety policy are implemented.** Go handles uploads, jobs, and deterministic policy. The Python worker supports Bengali ASR via Sarvam Saaras v4 or Groq Whisper, detects low-audio intervals and shot cuts, and asks OpenAI for structured scene evidence and break naturalness scores. A Go policy then rejects breaks during speech, uncertain or sensitive scenes, and unfinished thoughts, and enforces pacing and ad-load limits. The UI shows accepted and withheld moments with seekable markers and exact reasons. Phase 3 reuses the previous evidence cache when available, so adding break scoring does not require another ASR pass on the same source. Brand matching, VMAP, and ad playback remain ahead.
 
 ## Run locally
 
@@ -14,7 +14,7 @@ Requirements: Go 1.25+, Python 3.10+, and FFmpeg/ffprobe on `PATH`.
 make run
 ```
 
-`make run` loads the ignored `.env` file in the project root and starts the Go app. Set `ASR_PROVIDER=groq` (default) with `GROQ_API_KEY`, or `ASR_PROVIDER=sarvam` with `SARVAM_API_KEY` for Saaras v4 Bengali transcription. Sarvam REST requests use mono 16 kHz WAV chunks of at most 25 seconds; its transcript timestamps are phrase-level. Set `OPENAI_API_KEY` for scene understanding; optionally set `OPENAI_VISION_MODEL` (defaults to `gpt-4o-mini`). Never commit or share these keys. Set `DEMO_ACCESS_PASSWORD` to enable the demo's HTTP Basic Auth gate (username `demo`); Railway deployments refuse to start if it is missing. `/healthz` remains available to the platform healthcheck. Without the selected ASR provider's key, uploads stop after media intake. Without OpenAI, successful transcripts are retained and the UI reports that scene analysis is unavailable. Open [http://localhost:8080](http://localhost:8080) and upload an MP4 with an audio track. Videos and private JSON job artifacts are kept in `data/uploads`.
+`make run` loads the ignored `.env` file in the project root and starts the Go app. Set `ASR_PROVIDER=groq` (default) with `GROQ_API_KEY`, or `ASR_PROVIDER=sarvam` with `SARVAM_API_KEY` for Saaras v4 Bengali transcription. Sarvam REST requests use mono 16 kHz WAV chunks of at most 25 seconds; its transcript timestamps are phrase-level. Set `OPENAI_API_KEY` for scene understanding and break scoring; optionally set `OPENAI_VISION_MODEL` and `OPENAI_BREAK_MODEL` (both default to `gpt-4o-mini`). Never commit or share these keys. Set `DEMO_ACCESS_PASSWORD` to enable the demo's HTTP Basic Auth gate (username `demo`); Railway deployments refuse to start if it is missing. `/healthz` remains available to the platform healthcheck. Without the selected ASR provider's key, uploads stop after media intake. Without OpenAI, successful transcripts are retained and the UI reports that scene analysis is unavailable. Open [http://localhost:8080](http://localhost:8080) and upload an MP4 with an audio track. Videos and private JSON job artifacts are kept in `data/uploads`.
 
 Set `ADDR` to change the listen address and `UPLOAD_DIR` to change the upload directory.
 
@@ -48,6 +48,8 @@ The container includes Go, Python 3, and FFmpeg. Set the selected ASR provider a
 - `GET /media/{id}` — source video playback
 
 Job metadata, transcript, scene evidence, and pause intervals are atomically stored as private `.job.json` sidecars alongside the uploaded videos. Interrupted jobs restore as retryable failures; active inference is not resumed automatically.
+
+Phase 3 policy uses a 15-second planning ad, at least 15 seconds of programme before a break, at least 10 seconds after, a 180-second gap between selected breaks, at most 4 breaks per hour (rounded up for shorter clips), and at most 20% planned ad load. The Go policy also requires a verified low-audio pause, no overlapping speech, supported scene context on both sides, and passing AI scores. A break is withheld when evidence is missing or uncertain. Once actual creative durations exist in Phase 4–5, the policy must be rechecked using each selected creative's duration before playback.
 
 ## Project notes
 

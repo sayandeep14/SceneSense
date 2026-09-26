@@ -31,6 +31,27 @@ json.dump({"language":"bengali","duration":2,"text":"নমস্কার","seg
 	}
 }
 
+func TestAIWorkerBoundaryAppliesPolicyToModelScores(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 is not installed")
+	}
+	path := filepath.Join(t.TempDir(), "worker.py")
+	contents := `import json,sys
+json.load(sys.stdin)
+json.dump({"duration":80,"segments":[{"start":2,"end":8,"text":"কথা শেষ।"}],"scenes":[{"scene_id":"one","start":0,"end":80,"summary":"A calm talk","dialogue_state":"completed_thought","confidence":0.9,"sensitive_contexts":[]}],"scene_analysis_status":"complete","silence_intervals":[{"start":39,"end":41,"duration":2}],"break_scoring_status":"complete","break_model":"test-model","break_prompt_version":"test-v1","break_candidates":[{"candidate_id":"candidate-001","time":40,"signals":["low_audio_pause"],"naturalness":0.9,"disruption_risk":0.1,"confidence":0.9,"ai_reason":"The pause feels natural.","ai_model":"test-model","ai_prompt_version":"test-v1"}]},sys.stdout)`
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	transcript, err := runAIWorker(context.Background(), python, path, "unused.mp4", t.TempDir(), "assets/brands.json", "fixture-hash")
+	if err != nil {
+		t.Fatalf("run worker: %v", err)
+	}
+	if transcript.BreakPolicy.AcceptedCount != 1 || transcript.BreakCandidates[0].Decision != "accepted" {
+		t.Fatalf("model scores were not filtered through the policy: %+v", transcript.BreakCandidates)
+	}
+}
+
 func TestAIWorkerRejectsOutOfRangeSceneEvidence(t *testing.T) {
 	transcript := Transcript{
 		Duration: 10,
