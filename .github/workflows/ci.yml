@@ -40,6 +40,18 @@ jobs:
       - name: Test
         run: go test -race ./...
 
+      - name: Install AI worker dependencies
+        run: pip install --no-deps -r ai/requirements.txt
+
+      - name: Cache ONNX models
+        uses: actions/cache@v4
+        with:
+          path: models
+          key: onnx-models-${{ hashFiles('ai/fetch_models.py') }}
+
+      - name: Fetch ONNX models
+        run: python ai/fetch_models.py models
+
       - name: Test AI worker
         run: python -m unittest discover -s ai -p 'test_*.py'
 
@@ -61,4 +73,5 @@ jobs:
           curl --fail --silent http://127.0.0.1:18080/healthz
           curl --fail --silent http://127.0.0.1:18080/ | grep -q "Make every break"
           docker exec contextual-ad-lab-ci python3 --version
+          docker exec -w /app/ai contextual-ad-lab-ci python3 -c "import numpy, onnxruntime, cv2, scenedetect, PIL, visual, audio; visual._session(); audio._model(); print('models ok')"
           docker stop contextual-ad-lab-ci

@@ -2,46 +2,82 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"math"
-	"sort"
 	"strings"
 )
 
 const (
-	breakPolicyVersion = "break-policy-v1"
-	minLeadSeconds     = 15.0
-	minTailSeconds     = 10.0
-	minBreakGap        = 300.0
-	contextGuard       = 8.0
-	plannedAdSeconds   = 15.0
-	maxAdLoad          = 0.20
-	maxBreaksPerHour   = 8
+	breakPolicyVersion  = "break-policy-v2-scene-fusion"
+	minLeadSeconds      = 15.0
+	minTailSeconds      = 10.0
+	minBreakGap         = 300.0
+	contextGuard        = 8.0
+	plannedAdSeconds    = 15.0
+	maxAdLoad           = 0.20
+	maxBreaksPerHour    = 8
+	maxBreakCandidates  = 64
+	speechBlock         = 0.5
+	tensionBlock        = 0.7
+	minJudgeConfidence  = 0.5
+	minSceneConfidence  = 0.65
+	spacingPenalty      = 0.25
+	manualPlacementLoad = 0.6
 )
 
+var validTiers = map[string]bool{"High": true, "Medium": true, "Low": true}
+
+type AudioChange struct {
+	Shift            float64 `json:"shift"`
+	LoudnessChangeDB float64 `json:"loudness_change_db"`
+	Before           string  `json:"before"`
+	After            string  `json:"after"`
+	MusicChange      float64 `json:"music_change"`
+}
+
 type BreakCandidate struct {
-	CandidateID                string            `json:"candidate_id"`
-	Time                       float64           `json:"time"`
-	Signals                    []string          `json:"signals"`
-	Evidence                   []string          `json:"evidence"`
-	BeforeText                 string            `json:"before_text"`
-	AfterText                  string            `json:"after_text"`
-	SceneContext               string            `json:"scene_context"`
-	PrecedingSceneContext      string            `json:"preceding_scene_context,omitempty"`
-	PrecedingSceneMood         string            `json:"preceding_scene_mood,omitempty"`
-	PrecedingSensitiveContexts []string          `json:"preceding_sensitive_contexts,omitempty"`
-	TransitionKind             string            `json:"transition_kind,omitempty"`
-	TransitionEvidence         string            `json:"transition_evidence,omitempty"`
-	BrandRecommendations       []SceneBrandMatch `json:"brand_recommendations,omitempty"`
-	BlockedBrandMatches        []SceneBrandMatch `json:"blocked_brand_matches,omitempty"`
-	Naturalness                float64           `json:"naturalness"`
-	DisruptionRisk             float64           `json:"disruption_risk"`
-	Confidence                 float64           `json:"confidence"`
-	AIReason                   string            `json:"ai_reason"`
-	AIModel                    string            `json:"ai_model"`
-	AIPromptVer                string            `json:"ai_prompt_version"`
-	Decision                   string            `json:"decision"`
-	Potential                  bool              `json:"potential"`
-	Reasons                    []PolicyReason    `json:"reasons"`
+	CandidateID                string             `json:"candidate_id"`
+	Time                       float64            `json:"time"`
+	Signals                    []string           `json:"signals"`
+	Evidence                   []string           `json:"evidence"`
+	BeforeText                 string             `json:"before_text"`
+	AfterText                  string             `json:"after_text"`
+	TimingQuality              string             `json:"timing_quality,omitempty"`
+	SceneContext               string             `json:"scene_context"`
+	PrecedingSceneContext      string             `json:"preceding_scene_context,omitempty"`
+	PrecedingSceneMood         string             `json:"preceding_scene_mood,omitempty"`
+	PrecedingSensitiveContexts []string           `json:"preceding_sensitive_contexts,omitempty"`
+	TransitionKind             string             `json:"transition_kind,omitempty"`
+	TransitionEvidence         string             `json:"transition_evidence,omitempty"`
+	BrandRecommendations       []SceneBrandMatch  `json:"brand_recommendations,omitempty"`
+	BlockedBrandMatches        []SceneBrandMatch  `json:"blocked_brand_matches,omitempty"`
+	Continuity                 string             `json:"continuity,omitempty"`
+	SceneChange                bool               `json:"scene_change"`
+	FromContext                string             `json:"from_context,omitempty"`
+	ToContext                  string             `json:"to_context,omitempty"`
+	TopicShift                 float64            `json:"topic_shift"`
+	Tension                    float64            `json:"tension"`
+	DialogueComplete           bool               `json:"dialogue_complete"`
+	SceneScore                 float64            `json:"scene_score"`
+	SignalScores               map[string]float64 `json:"signal_scores,omitempty"`
+	ShotTransition             string             `json:"shot_transition,omitempty"`
+	PauseSeconds               float64            `json:"pause_seconds"`
+	PauseSource                string             `json:"pause_source,omitempty"`
+	SpeechAtCut                float64            `json:"speech_at_cut"`
+	AudioChange                *AudioChange       `json:"audio_change,omitempty"`
+	AdScore                    float64            `json:"ad_score"`
+	Tier                       string             `json:"tier,omitempty"`
+	Rationale                  string             `json:"rationale,omitempty"`
+	Naturalness                float64            `json:"naturalness"`
+	DisruptionRisk             float64            `json:"disruption_risk"`
+	Confidence                 float64            `json:"confidence"`
+	AIReason                   string             `json:"ai_reason"`
+	AIModel                    string             `json:"ai_model"`
+	AIPromptVer                string             `json:"ai_prompt_version"`
+	Decision                   string             `json:"decision"`
+	Potential                  bool               `json:"potential"`
+	SelectionNote              string             `json:"selection_note,omitempty"`
+	Reasons                    []PolicyReason     `json:"reasons"`
 }
 
 type PolicyReason struct {
@@ -57,10 +93,25 @@ type BreakPolicyInfo struct {
 	PlannedAdSeconds float64 `json:"planned_ad_seconds"`
 	AcceptedCount    int     `json:"accepted_count"`
 	MaxBreakCount    int     `json:"max_break_count"`
+	ShotCount        int     `json:"shot_count"`
+	SceneChangeCount int     `json:"scene_change_count"`
+	EligibleCount    int     `json:"eligible_count"`
+	AutoBreakCount   int     `json:"auto_break_count"`
+	Optimizer        string  `json:"optimizer"`
+	Summary          string  `json:"summary,omitempty"`
+}
+
+func unitInterval(values ...float64) bool {
+	for _, value := range values {
+		if math.IsNaN(value) || math.IsInf(value, 0) || value < 0 || value > 1 {
+			return false
+		}
+	}
+	return true
 }
 
 func validateBreakCandidates(transcript Transcript) error {
-	if len(transcript.BreakCandidates) > 32 {
+	if len(transcript.BreakCandidates) > maxBreakCandidates {
 		return errors.New("AI worker returned too many break candidates")
 	}
 	if transcript.BreakScoringStatus == "complete" && (transcript.BreakModel == "" || transcript.BreakPromptVersion == "") {
@@ -74,13 +125,21 @@ func validateBreakCandidates(transcript Transcript) error {
 			len(candidate.Signals) == 0 {
 			return errors.New("AI worker returned invalid break candidate times or IDs")
 		}
-		for _, score := range []float64{candidate.Naturalness, candidate.DisruptionRisk, candidate.Confidence} {
-			if math.IsNaN(score) || math.IsInf(score, 0) || score < 0 || score > 1 {
-				return errors.New("AI worker returned invalid break scores")
+		if !unitInterval(candidate.Naturalness, candidate.DisruptionRisk, candidate.Confidence, candidate.Tension,
+			candidate.TopicShift, candidate.SceneScore, candidate.SpeechAtCut, candidate.AdScore) ||
+			candidate.PauseSeconds < 0 || math.IsNaN(candidate.PauseSeconds) {
+			return errors.New("AI worker returned invalid break scores")
+		}
+		for _, score := range candidate.SignalScores {
+			if !unitInterval(score) {
+				return errors.New("AI worker returned invalid break signal scores")
 			}
 		}
+		if candidate.Tier != "" && !validTiers[candidate.Tier] {
+			return errors.New("AI worker returned an unknown confidence tier")
+		}
 		if transcript.BreakScoringStatus == "complete" &&
-			(candidate.AIReason == "" || candidate.AIModel == "" || candidate.AIPromptVer == "") {
+			(candidate.AIReason == "" || candidate.AIModel == "" || candidate.AIPromptVer == "" || candidate.Tier == "") {
 			return errors.New("AI worker omitted a candidate score explanation")
 		}
 		if err := validateBrandMatches(candidate.BrandRecommendations); err != nil {
@@ -114,116 +173,71 @@ func addReason(candidate *BreakCandidate, code, message string) {
 	candidate.Reasons = append(candidate.Reasons, PolicyReason{Code: code, Message: message})
 }
 
-func terminalSentence(text string) bool {
-	runes := []rune(strings.TrimSpace(text))
-	return len(runes) > 0 && strings.ContainsRune("।.!?？", runes[len(runes)-1])
-}
-
-func completedSceneBoundary(transcript *Transcript, candidate *BreakCandidate) bool {
-	hasSceneEndSignal := false
-	for _, signal := range candidate.Signals {
-		if signal == "scene_end" || signal == "scene_transition" {
-			hasSceneEndSignal = true
-			break
-		}
+// maxBreakCount bounds k by breaks per hour, planned ad load, and how many minimum gaps fit.
+func maxBreakCount(duration float64) int {
+	usable := duration - minLeadSeconds - minTailSeconds
+	if usable < 0 {
+		return 0
 	}
-	if !hasSceneEndSignal {
-		return false
+	count := int(math.Ceil(duration / 3600 * maxBreaksPerHour))
+	if byLoad := int(math.Floor(maxAdLoad * duration / ((1 - maxAdLoad) * plannedAdSeconds))); byLoad < count {
+		count = byLoad
 	}
-	if containsSignal(candidate.Signals, "scene_transition") {
-		verified := false
-		for _, transition := range transcript.Transitions {
-			if math.Abs(transition.Time-candidate.Time) <= 1.2 && transition.Continuity == "new_scene" && transition.Confidence >= 0.65 {
-				verified = true
-				break
-			}
-		}
-		if !verified {
-			return false
-		}
+	if byGap := int(math.Floor(usable/minBreakGap)) + 1; byGap < count {
+		count = byGap
 	}
-	for _, scene := range transcript.Scenes {
-		if math.Abs(scene.End-candidate.Time) <= 1.2 && scene.DialogueState == "completed_thought" {
-			return true
-		}
-	}
-	return false
-}
-
-func containsSignal(signals []string, target string) bool {
-	for _, signal := range signals {
-		if signal == target {
-			return true
-		}
-	}
-	return false
+	return max(count, 0)
 }
 
 func candidateEvidenceReasons(transcript *Transcript, candidate *BreakCandidate) {
-	time := candidate.Time
+	at := candidate.Time
 	if transcript.SceneAnalysisStatus != "complete" {
 		addReason(candidate, "scene_unavailable", "Scene context is unavailable.")
 	}
 	if transcript.BreakScoringStatus != "complete" {
-		addReason(candidate, "ai_unavailable", "AI naturalness scoring is unavailable.")
-	} else {
-		if candidate.Confidence < 0.65 {
-			addReason(candidate, "low_ai_confidence", "AI confidence is below 65%.")
-		}
-		if candidate.Naturalness < 0.70 {
-			addReason(candidate, "low_naturalness", "AI naturalness is below 70%.")
-		}
-		if candidate.DisruptionRisk > 0.40 {
-			addReason(candidate, "high_disruption", "AI disruption risk exceeds 40%.")
-		}
+		addReason(candidate, "ai_unavailable", "AI boundary judgement is unavailable.")
 	}
-	if time < minLeadSeconds || time > transcript.Duration-minTailSeconds {
+	if !candidate.SceneChange {
+		addReason(candidate, "same_scene", "Camera change inside the same scene, not a context switch.")
+	}
+	if at < minLeadSeconds || at > transcript.Duration-minTailSeconds {
 		addReason(candidate, "edge_guard", "The programme needs a clear opening and ending.")
 	}
-
-	pauseFound := false
-	for _, pause := range transcript.SilenceIntervals {
-		if pause.Duration >= 0.55 && pause.Start+0.15 <= time && time <= pause.End-0.15 {
-			pauseFound = true
-			break
-		}
+	if candidate.SpeechAtCut >= speechBlock {
+		addReason(candidate, "active_speech", "Speech is detected across the cut.")
 	}
-	if !pauseFound {
-		addReason(candidate, "no_verified_pause", "No verified low-audio pause covers this moment.")
-	}
-
-	var prior *TranscriptSegment
-	for index := range transcript.Segments {
-		segment := &transcript.Segments[index]
-		if segment.Start < time+0.1 && segment.End > time-0.1 {
-			if segment.End-segment.Start <= 6 || len(segment.Words) > 0 {
-				addReason(candidate, "active_speech", "A spoken phrase overlaps the proposed cut.")
-			} else if !pauseFound || !completedSceneBoundary(transcript, candidate) {
-				addReason(candidate, "coarse_asr_timing", "Broad transcript timing requires a verified pause at a completed scene boundary.")
+	for _, segment := range transcript.Segments {
+		for _, word := range segment.Words {
+			if word.Start < at-0.05 && word.End > at+0.05 {
+				addReason(candidate, "active_speech", "A spoken word overlaps the cut.")
 			}
-			break
-		}
-		if segment.End <= time+0.1 {
-			prior = segment
 		}
 	}
-
+	if candidate.Tension >= tensionBlock {
+		addReason(candidate, "high_tension", "A tense or dramatic moment; an ad here would break the story.")
+	}
+	if transcript.BreakScoringStatus == "complete" && !candidate.DialogueComplete {
+		addReason(candidate, "unfinished_dialogue", "The spoken thought continues across the cut.")
+	}
+	if candidate.Continuity == "uncertain" || (transcript.BreakScoringStatus == "complete" && candidate.Confidence < minJudgeConfidence) {
+		addReason(candidate, "uncertain_context", "The model is not confident the scene changes here.")
+	}
+	if len(candidate.PrecedingSensitiveContexts) > 0 {
+		addReason(candidate, "sensitive_context", "Sensitive context next to the break: "+strings.Join(candidate.PrecedingSensitiveContexts, ", ")+".")
+	}
 	leftCovered, rightCovered := false, false
 	for _, scene := range transcript.Scenes {
-		if scene.Start <= time-0.4 && scene.End >= time-0.4 {
+		if scene.Start <= at-0.4 && scene.End >= at-0.4 {
 			leftCovered = true
 		}
-		if scene.Start <= time+0.4 && scene.End >= time+0.4 {
+		if scene.Start <= at+0.4 && scene.End >= at+0.4 {
 			rightCovered = true
 		}
-		if scene.End < time-contextGuard || scene.Start > time+contextGuard {
+		if scene.End < at-contextGuard || scene.Start > at+contextGuard {
 			continue
 		}
-		if scene.Confidence < 0.65 || scene.DialogueState == "unclear" {
+		if scene.Confidence < minSceneConfidence || scene.DialogueState == "unclear" {
 			addReason(candidate, "uncertain_context", "Nearby scene context is uncertain.")
-		}
-		if scene.DialogueState == "ongoing" && scene.Start <= time && scene.End >= time {
-			addReason(candidate, "ongoing_dialogue", "The scene still has an ongoing spoken thought.")
 		}
 		if len(scene.SensitiveContexts) > 0 {
 			addReason(candidate, "sensitive_context", "A sensitive scene is adjacent to the proposed break.")
@@ -232,69 +246,49 @@ func candidateEvidenceReasons(transcript *Transcript, candidate *BreakCandidate)
 	if !leftCovered || !rightCovered {
 		addReason(candidate, "unknown_context", "Scene evidence does not cover both sides of the break.")
 	}
-	if prior != nil && time-prior.End < 3 && !terminalSentence(prior.Text) {
-		addReason(candidate, "unfinished_sentence", "The previous spoken thought may be unfinished.")
-	}
 }
 
 func applyBreakPolicy(transcript *Transcript) {
 	transcript.BreakPolicy = BreakPolicyInfo{
-		Version: breakPolicyVersion, MinGapSeconds: minBreakGap,
-		MaxBreaksPerHour: maxBreaksPerHour, MaxAdLoadPercent: maxAdLoad * 100,
-		PlannedAdSeconds: plannedAdSeconds,
+		Version: breakPolicyVersion, MinGapSeconds: minBreakGap, MaxBreaksPerHour: maxBreaksPerHour,
+		MaxAdLoadPercent: maxAdLoad * 100, PlannedAdSeconds: plannedAdSeconds,
+		MaxBreakCount: maxBreakCount(transcript.Duration), ShotCount: len(transcript.ShotBoundaries),
+		Optimizer: optimizerVersion,
 	}
-	maxCount := int(math.Ceil(transcript.Duration / 3600 * maxBreaksPerHour))
-	if maxCount < 1 {
-		maxCount = 1
-	}
-	transcript.BreakPolicy.MaxBreakCount = maxCount
-	eligible := make([]int, 0, len(transcript.BreakCandidates))
 	for index := range transcript.BreakCandidates {
 		candidate := &transcript.BreakCandidates[index]
-		candidate.Decision, candidate.Reasons = "rejected", nil
+		candidate.Decision, candidate.Reasons, candidate.SelectionNote = "rejected", nil, ""
 		candidateEvidenceReasons(transcript, candidate)
 		candidate.Potential = len(candidate.Reasons) == 0
-		if len(candidate.Reasons) == 0 {
-			eligible = append(eligible, index)
+		if candidate.SceneChange {
+			transcript.BreakPolicy.SceneChangeCount++
+		}
+		if candidate.Potential && candidate.Tier != "Low" {
+			transcript.BreakPolicy.EligibleCount++
 		}
 	}
-	// The highest quality eligible moment wins; ties resolve by earlier time.
-	sort.Slice(eligible, func(left, right int) bool {
-		a := transcript.BreakCandidates[eligible[left]]
-		b := transcript.BreakCandidates[eligible[right]]
-		qualityA, qualityB := a.Naturalness-a.DisruptionRisk, b.Naturalness-b.DisruptionRisk
-		if qualityA != qualityB {
-			return qualityA > qualityB
-		}
-		if a.Confidence != b.Confidence {
-			return a.Confidence > b.Confidence
-		}
-		return a.Time < b.Time
-	})
-	selected := make([]float64, 0, maxCount)
-	for _, index := range eligible {
+	result, _ := optimizeBreaks(transcript, OptimizeRequest{})
+	notes := make(map[string]CandidateOutcome, len(result.Outcomes))
+	for _, outcome := range result.Outcomes {
+		notes[outcome.CandidateID] = outcome
+	}
+	for index := range transcript.BreakCandidates {
 		candidate := &transcript.BreakCandidates[index]
-		if len(selected) >= maxCount {
-			addReason(candidate, "max_break_count", "The programme's maximum break count is reached.")
-			continue
+		outcome := notes[candidate.CandidateID]
+		candidate.SelectionNote = outcome.Note
+		if outcome.Status == "selected" {
+			candidate.Decision = "accepted"
 		}
-		if float64(len(selected)+1)*plannedAdSeconds/(transcript.Duration+float64(len(selected)+1)*plannedAdSeconds) > maxAdLoad {
-			addReason(candidate, "ad_load", "Adding this ad would exceed the 20% ad-load limit.")
-			continue
-		}
-		tooClose := false
-		for _, prior := range selected {
-			if math.Abs(candidate.Time-prior) < minBreakGap {
-				tooClose = true
-				break
-			}
-		}
-		if tooClose {
-			addReason(candidate, "minimum_gap", "Another selected break is within 300 seconds.")
-			continue
-		}
-		candidate.Decision = "accepted"
-		selected = append(selected, candidate.Time)
 	}
-	transcript.BreakPolicy.AcceptedCount = len(selected)
+	transcript.BreakPolicy.AcceptedCount = len(result.Selected)
+	transcript.BreakPolicy.AutoBreakCount = result.AutoK
+	transcript.BreakPolicy.Summary = result.Message
+}
+
+func clockLabel(seconds float64) string {
+	whole := int(math.Max(0, seconds))
+	if whole >= 3600 {
+		return fmt.Sprintf("%d:%02d:%02d", whole/3600, whole%3600/60, whole%60)
+	}
+	return fmt.Sprintf("%d:%02d", whole/60, whole%60)
 }

@@ -44,6 +44,7 @@ type PlaybackSelection struct {
 	BrandID         string  `json:"brand_id"`
 	CreativeID      string  `json:"creative_id"`
 	Source          string  `json:"source"`
+	CandidateID     string  `json:"candidate_id,omitempty"`
 	AllowSkip       bool    `json:"allow_skip"`
 	SkipAfterSec    int     `json:"skip_after_sec"`
 	ClickThroughURL string  `json:"click_through_url"`

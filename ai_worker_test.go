@@ -21,7 +21,7 @@ json.dump({"language":"bengali","duration":2,"text":"নমস্কার","seg
 	if err := os.WriteFile(worker, []byte(contents), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	transcript, err := runAIWorker(context.Background(), python, worker, "unused.mp4", t.TempDir(), "assets/brands.json", "fixture-hash")
+	transcript, err := runAIWorker(context.Background(), python, worker, "unused.mp4", t.TempDir(), "assets/brands.json", "fixture-hash", nil)
 	if err != nil {
 		t.Fatalf("run AI worker: %v", err)
 	}
@@ -39,11 +39,11 @@ func TestAIWorkerBoundaryAppliesPolicyToModelScores(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "worker.py")
 	contents := `import json,sys
 json.load(sys.stdin)
-json.dump({"duration":80,"segments":[{"start":2,"end":8,"text":"কথা শেষ।"}],"scenes":[{"scene_id":"one","start":0,"end":80,"summary":"A calm talk","dialogue_state":"completed_thought","confidence":0.9,"sensitive_contexts":[]}],"scene_analysis_status":"complete","silence_intervals":[{"start":39,"end":41,"duration":2}],"break_scoring_status":"complete","break_model":"test-model","break_prompt_version":"test-v1","break_candidates":[{"candidate_id":"candidate-001","time":40,"signals":["low_audio_pause"],"naturalness":0.9,"disruption_risk":0.1,"confidence":0.9,"ai_reason":"The pause feels natural.","ai_model":"test-model","ai_prompt_version":"test-v1","preceding_scene_context":"A quiet family conversation","preceding_scene_mood":"calm, warm","preceding_sensitive_contexts":["family"]}]},sys.stdout)`
+json.dump({"duration":80,"segments":[{"start":2,"end":8,"text":"কথা শেষ।"}],"scenes":[{"scene_id":"one","start":0,"end":80,"summary":"A calm talk","dialogue_state":"completed_thought","confidence":0.9,"sensitive_contexts":[]}],"scene_analysis_status":"complete","silence_intervals":[{"start":39,"end":41,"duration":2}],"break_scoring_status":"complete","break_model":"test-model","break_prompt_version":"test-v1","break_candidates":[{"candidate_id":"candidate-001","time":40,"signals":["low_audio_pause"],"naturalness":0.9,"disruption_risk":0.1,"confidence":0.9,"ai_reason":"The pause feels natural.","ai_model":"test-model","ai_prompt_version":"test-v1","preceding_scene_context":"A quiet family conversation","preceding_scene_mood":"calm, warm","scene_change":True,"continuity":"new_scene","dialogue_complete":True,"tension":0.1,"ad_score":0.8,"tier":"High","rationale":"Setting change + 2.0-second silence.","signal_scores":{"pause":1.0}}]},sys.stdout)`
 	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	transcript, err := runAIWorker(context.Background(), python, path, "unused.mp4", t.TempDir(), "assets/brands.json", "fixture-hash")
+	transcript, err := runAIWorker(context.Background(), python, path, "unused.mp4", t.TempDir(), "assets/brands.json", "fixture-hash", nil)
 	if err != nil {
 		t.Fatalf("run worker: %v", err)
 	}
@@ -52,8 +52,33 @@ json.dump({"duration":80,"segments":[{"start":2,"end":8,"text":"কথা শে
 	}
 	if transcript.BreakCandidates[0].PrecedingSceneMood != "calm, warm" ||
 		transcript.BreakCandidates[0].PrecedingSceneContext != "A quiet family conversation" ||
-		len(transcript.BreakCandidates[0].PrecedingSensitiveContexts) != 1 {
+		transcript.BreakCandidates[0].Tier != "High" || transcript.BreakCandidates[0].SignalScores["pause"] != 1 {
 		t.Fatalf("preceding scene context was lost at the Python/Go boundary: %+v", transcript.BreakCandidates[0])
+	}
+}
+
+func TestAIWorkerProgressLinesUpdateStageAndStayOutOfErrors(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 is not installed")
+	}
+	path := filepath.Join(t.TempDir(), "worker.py")
+	contents := `import json,sys
+json.load(sys.stdin)
+print('@@progress {"stage":"detecting_shots","progress":36,"message":"Detecting shots."}', file=sys.stderr, flush=True)
+print("Shot detection failed: the file is truncated.", file=sys.stderr)
+sys.exit(2)`
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stages []string
+	_, err = runAIWorker(context.Background(), python, path, "unused.mp4", t.TempDir(), "assets/brands.json", "fixture-hash",
+		func(stage string, progress int, message string) { stages = append(stages, stage) })
+	if len(stages) != 1 || stages[0] != "detecting_shots" {
+		t.Fatalf("progress stages = %v", stages)
+	}
+	if err == nil || err.Error() != "Shot detection failed: the file is truncated." {
+		t.Fatalf("error should be the worker message without progress lines, got %v", err)
 	}
 }
 
@@ -92,7 +117,7 @@ func TestAIWorkerRejectsInvalidOutput(t *testing.T) {
 	if err := os.WriteFile(worker, []byte(`print('{"duration":1,"segments":[{"start":0.8,"end":1},{"start":0.2,"end":0.7}]}')`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	_, err = runAIWorker(context.Background(), python, worker, "unused.mp4", t.TempDir(), "assets/brands.json", "fixture-hash")
+	_, err = runAIWorker(context.Background(), python, worker, "unused.mp4", t.TempDir(), "assets/brands.json", "fixture-hash", nil)
 	if err == nil || !strings.Contains(err.Error(), "invalid segment timestamps") {
 		t.Fatalf("error = %v, want invalid segment timestamps", err)
 	}

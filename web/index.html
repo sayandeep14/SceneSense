@@ -122,19 +122,20 @@
                   <ol id="scene-list" class="scene-list"></ol>
                 </section>
                 <section id="break-decisions" class="break-decisions hidden" aria-label="Break decisions">
-                  <div class="break-heading"><div><strong>Safe break opportunities</strong><span id="break-meta">Waiting for policy review.</span></div><span class="break-policy-tag">AI + POLICY</span></div>
+                  <div class="break-heading"><div><strong>Where the ads go</strong><span id="break-meta">Waiting for policy review.</span></div><span class="break-policy-tag">AI + POLICY</span></div>
+                  <div id="break-funnel" class="break-funnel" aria-label="Shot boundaries, scene changes, and ad breaks"></div>
                   <div id="break-warning" class="scene-warning hidden" role="status"></div>
-                  <div class="break-count-control"><label for="break-count-range"><span>How many breaks?</span><output id="break-count-value">0</output></label><input id="break-count-range" type="range" min="0" max="0" step="1" value="0"><p id="break-selection-status">AI selects the strongest safe moments. You can adjust every marker.</p></div>
-                  <div class="break-legend"><span><i class="legend-dot all-cuts"></i> All cuts</span><span><i class="legend-dot potential"></i> AI potential</span><span><i class="legend-dot accepted"></i> Selected</span><span><i class="legend-dot rejected"></i> Withheld</span><span class="legend-hint">Click any cut or marker to choose an ad</span></div>
+                  <div class="break-count-control"><label for="break-count-range"><span>How many breaks (k)?</span><output id="break-count-value">0</output></label><input id="break-count-range" type="range" min="0" max="0" step="1" value="0"><div class="break-count-row"><p id="break-selection-status">The optimiser picks the best-spaced, most ad-friendly scene changes.</p><button id="break-recommend" class="outline-button" type="button">Use recommendation</button></div></div>
+                  <div class="break-legend"><span><i class="legend-dot all-cuts"></i> Shot boundary (n)</span><span><i class="legend-dot tier-high"></i> High</span><span><i class="legend-dot tier-medium"></i> Medium</span><span><i class="legend-dot tier-low"></i> Low</span><span><i class="legend-dot tier-blocked"></i> Blocked scene change (m)</span><span><i class="legend-dot accepted"></i> Ad break (k)</span><span class="legend-hint">Click any marker to inspect it and choose an ad</span></div>
                   <p id="break-empty" class="break-empty hidden"></p>
                   <ol id="break-list" class="break-list"></ol>
                   <section id="playback-planner" class="playback-planner" aria-label="Ad playback plan">
-                    <div class="playback-planner-heading"><strong>Playback &amp; ad plan</strong><span>VMAP · ad library</span></div>
+                    <div class="playback-planner-heading"><strong>Review &amp; finalize</strong><span id="finalize-state" class="finalize-state">Draft · not finalized</span></div>
                     <p class="playback-disclaimer">Built-in brands use black-screen placeholder MP4s; uploaded ads play as provided. Brand targeting and negative contexts come from the ad library and are rechecked by the server.</p>
                     <div id="playback-break-config" class="playback-break-config"></div>
-                    <div class="playback-actions"><button id="build-vmap" class="outline-button" type="button" disabled>Build VMAP &amp; debug JSON</button><button id="play-programme" class="primary-button" type="button" disabled>▶ Play programme with breaks</button></div>
+                    <div class="playback-actions"><button id="build-vmap" class="outline-button" type="button" disabled>Finalize &amp; export</button><button id="play-programme" class="primary-button" type="button" disabled>▶ Play programme with breaks</button></div>
                     <p id="playback-status" class="playback-status" role="status">Choose at least one marker and a safe catalogue creative.</p>
-                    <div id="playback-downloads" class="playback-downloads hidden"><a id="vmap-download" download>Download VMAP XML ↗</a><a id="debug-download" download>Download decision graph JSON ↗</a></div>
+                    <div id="playback-downloads" class="playback-downloads hidden"><a id="manifest-download" download>Download OTT manifest (JSON) ↗</a><a id="vmap-download" download>Download VMAP XML ↗</a><a id="debug-download" download>Download decision graph JSON ↗</a><a href="/schema/ad-manifest-v1.json" target="_blank" rel="noopener">Manifest JSON Schema ↗</a></div>
                     <ol id="playback-event-list" class="playback-event-list" aria-label="Playback event log"></ol>
                   </section>
                 </section>

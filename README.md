@@ -8,17 +8,28 @@ An AI-first contextual ad placement MVP for Bengali video. This repository is be
 
 ## Run locally
 
-Requirements: Go 1.25+, Python 3.10+, and FFmpeg/ffprobe on `PATH`.
+Requirements: Go 1.25+, Python 3.12+, and FFmpeg/ffprobe on `PATH`.
 
 ```sh
+make setup   # .venv with the pinned worker dependencies, plus the ONNX models (SHA-256 verified)
 make run
 ```
 
-`make run` loads the ignored `.env` file in the project root and starts the Go app. Set `ASR_PROVIDER=groq` (default) with `GROQ_API_KEY`, or `ASR_PROVIDER=sarvam` with `SARVAM_API_KEY` for Saaras v4 Bengali transcription. Sarvam REST requests use mono 16 kHz WAV chunks of at most 25 seconds; its transcript timestamps are phrase-level. Set `OPENAI_API_KEY` for scene understanding and break scoring; optionally set `OPENAI_VISION_MODEL` and `OPENAI_BREAK_MODEL` (both default to `gpt-4o-mini`). Never commit or share these keys. Set `DEMO_ACCESS_PASSWORD` to enable the demo's HTTP Basic Auth gate (username `demo`); Railway deployments refuse to start if it is missing. `/healthz` remains available to the platform healthcheck. Without the selected ASR provider's key, uploads stop after media intake. Without OpenAI, successful transcripts are retained and the UI reports that scene analysis is unavailable. Open [http://localhost:8080](http://localhost:8080) and upload an MP4 with an audio track. Videos and private JSON job artifacts are kept in `data/uploads`.
+`make run` loads the ignored `.env` file and starts the Go app with the `.venv` Python. Set `ASR_PROVIDER=groq` (default) with `GROQ_API_KEY`, or `ASR_PROVIDER=sarvam` with `SARVAM_API_KEY`. Set `OPENAI_API_KEY` for the boundary judge, scene descriptions, and transcript embeddings; optional overrides are `OPENAI_VISION_MODEL`, `OPENAI_BREAK_MODEL`, and `OPENAI_EMBEDDING_MODEL`. Never commit these keys. `DEMO_ACCESS_PASSWORD` enables HTTP Basic Auth (username `demo`); Railway deployments refuse to start without it, and `/healthz` stays public. Uploads and job sidecars live in `UPLOAD_DIR` (default `data/uploads`); `AD_LIBRARY_DIR` defaults to `<UPLOAD_DIR>/ads`, and `MODELS_DIR` to `models`.
 
-Set `ADDR` to change the listen address, `UPLOAD_DIR` to change the upload directory, and `AD_LIBRARY_DIR` (default `<UPLOAD_DIR>/ads`, so ads share the videos' persistent volume) to change where uploaded ads and their catalogue are stored.
+## How ad breaks are chosen
 
-The demo ad MP4s are generated on a developer machine and stored at the creative URLs in `assets/brands.json`; the server only serves those static files. Generate them with `go run ./cmd/generate-demo-ads` (requires `rsvg-convert` and FFmpeg). The default slate time and mood are sample annotations; pass `-time` and `-mood` to change them, and use `-force` only when you intend to replace the local files. Brand targeting and negative-context metadata remain separate catalogue data, not video content.
+The pipeline compresses the video before any expensive model sees it, then narrows `n` shot boundaries to `m` real scene changes and `k` ad breaks:
+
+1. **Shots (n).** One FFmpeg decode feeds PySceneDetect (`AdaptiveDetector` for cuts, `ThresholdDetector` for fades) and a twin-comparison dissolve detector, and fills a 2 fps keyframe pool. Keyframes are the middle of each shot, plus one every 4 s in long shots.
+2. **Signals per boundary.** CLIP ViT-B/32 (ONNX, int8) compares consecutive shots and a three-shot window on each side, so shot/reverse-shot dialogue is not mistaken for a scene change. YAMNet (ONNX) tracks the audio scene, speech, and music. The worker also measures silence and lulls in dialogue, and a transcript-embedding distance before and after the cut. ASR text that YAMNet does not hear as speech is ignored, because Whisper-style models can invent text over music.
+3. **Fusion.** A weighted score keeps the strongest boundary per 15 s and shortlists at most 60.
+4. **Model judgement (m).** Only the shortlist reaches the vision model: one frame before and one after, plus the dialogue. It returns new/same scene, the from/to context, topic shift, tension, whether the dialogue is complete, and sensitive contexts. The resulting scenes are described once, with brand fit.
+5. **Ad-friendliness.** Each scene change gets a score, a High/Medium/Low tier, and a rationale such as "Setting change from family kitchen to courtyard (dissolve) + 1.2-second silence; dialogue wraps up; calm moment."
+6. **Policy and k.** The Go policy blocks speech across the cut, tense moments, unfinished dialogue, sensitive or uncertain context, and the programme edges. A dynamic-programming optimiser then picks exactly `k` breaks, at least 5 minutes apart, maximising ad-friendliness while spreading the breaks evenly. It recommends `k` from the High and Medium spots (at most 8 per hour and 20% ad load) and explains every choice.
+7. **Human review and finalize.** The dashboard shows the n → m → k funnel. Reviewers can change `k`, remove or force-include spots, place breaks anywhere, choose ads and viewer options, and **Finalize**. That writes a versioned OTT manifest (`/api/jobs/{id}/manifest.json`, schema at `/schema/ad-manifest-v1.json`) alongside VMAP/VAST. The review is saved on the server; editing after finalizing marks it as a draft until you finalize again.
+
+`python ai/synthetic_fixture.py out.mp4` builds a clip with known cuts, a fade, a dissolve, shot/reverse-shot, and camera motion; the tests use it as ground truth.
 
 ## Checks
 
@@ -26,7 +37,7 @@ The demo ad MP4s are generated on a developer machine and stored at the creative
 gofmt -w *.go
 go vet ./...
 go test ./...
-python3 -m unittest discover -s ai -p 'test_*.py'
+.venv/bin/python -m unittest discover -s ai -p 'test_*.py'
 go build ./...
 ```
 
@@ -50,6 +61,9 @@ The container includes Go, Python 3, and FFmpeg. Set the selected ASR provider a
 - `GET /media/{id}` — source video playback
 - `GET /api/brands` — built-in catalogue merged with uploaded ads (`source`: `builtin` or `custom`)
 - `POST /api/ads` — multipart ad upload: `video` (MP4, up to 120 s / 200 MB), `brand_name`, `category`, `target_contexts`, `negative_contexts` (comma-separated), `language`
+- `POST /api/jobs/{id}/optimize` — `{"k", "pinned", "excluded"}` → the best-spaced `k` breaks with an explanation for every candidate
+- `PUT /api/jobs/{id}/review` — save the reviewer's working plan
+- `POST /api/jobs/{id}/finalize` — validate and publish a new manifest revision; `GET /api/jobs/{id}/manifest.json[?revision=n]` downloads it
 - `GET /api/jobs/{id}/ad-suggestions?time=<seconds>` — scene before/after a cut and every brand ranked for it, with hard blocks
 - `POST /api/jobs/{id}/playback-plan` — each break also takes `allow_skip`, `skip_after_sec`, `click_through_url`, and `cta_label`; VAST carries them as `skipoffset` and `ClickThrough`
 

@@ -1,0 +1,143 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scenesense.local/schema/ad-manifest-v1.json",
+  "title": "SceneSense ad-insertion manifest",
+  "description": "A finalized, human-reviewed plan of mid-roll ad breaks for one programme. Each break says exactly where to pause the programme, which creative to play and how (skip rules, click-through), and why the moment was chosen. Players insert the ads at offset_sec and resume the programme at resume_offset_sec.",
+  "type": "object",
+  "required": ["$schema", "manifest_version", "revision", "status", "generated_at", "finalized_by", "programme", "policy", "analysis", "breaks", "delivery"],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": { "type": "string", "format": "uri" },
+    "manifest_version": { "const": "scenesense.ad-manifest/1.0" },
+    "revision": { "type": "integer", "minimum": 1, "description": "Increments each time the reviewer finalizes the plan again." },
+    "status": { "const": "final" },
+    "generated_at": { "type": "string", "format": "date-time" },
+    "finalized_by": { "type": "string", "minLength": 1 },
+    "programme": {
+      "type": "object",
+      "required": ["id", "title", "url", "duration_sec", "frame_rate", "timecode_basis", "width", "height", "content_hash"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "url": { "type": "string", "format": "uri" },
+        "duration_sec": { "type": "number", "exclusiveMinimum": 0 },
+        "frame_rate": { "type": "number", "minimum": 0, "description": "Average frame rate; 0 when unknown (timecodes then assume 25 fps)." },
+        "timecode_basis": { "const": "non-drop-frame" },
+        "width": { "type": "integer", "minimum": 0 },
+        "height": { "type": "integer", "minimum": 0 },
+        "content_hash": { "type": "string", "description": "SHA-256 of the analysed programme file." }
+      }
+    },
+    "policy": {
+      "type": "object",
+      "required": ["version", "min_gap_sec", "max_breaks_per_hour", "max_ad_load_percent", "ad_load_percent", "total_ad_sec", "edge_guard_sec"],
+      "additionalProperties": false,
+      "properties": {
+        "version": { "type": "string" },
+        "min_gap_sec": { "type": "number", "minimum": 0 },
+        "max_breaks_per_hour": { "type": "integer", "minimum": 0 },
+        "max_ad_load_percent": { "type": "number", "minimum": 0, "maximum": 100 },
+        "ad_load_percent": { "type": "number", "minimum": 0, "maximum": 100, "description": "Actual ad time / (programme + ad time) for this plan." },
+        "total_ad_sec": { "type": "integer", "minimum": 0 },
+        "edge_guard_sec": { "type": "array", "prefixItems": [{ "type": "number" }, { "type": "number" }], "items": false, "minItems": 2, "description": "Minimum programme time before the first and after the last break." }
+      }
+    },
+    "analysis": {
+      "type": "object",
+      "required": ["pipeline", "shot_count", "scene_change_count", "recommended_break_count", "selected_break_count"],
+      "additionalProperties": false,
+      "properties": {
+        "pipeline": { "type": "object", "additionalProperties": { "type": "string" }, "description": "Model and algorithm versions used for the analysis." },
+        "shot_count": { "type": "integer", "minimum": 0, "description": "n: detected shot boundaries." },
+        "scene_change_count": { "type": "integer", "minimum": 0, "description": "m: boundaries judged to be real context switches." },
+        "recommended_break_count": { "type": "integer", "minimum": 0, "description": "The system's suggested k." },
+        "selected_break_count": { "type": "integer", "minimum": 0, "description": "k in this finalized plan." }
+      }
+    },
+    "breaks": { "type": "array", "items": { "$ref": "#/$defs/break" } },
+    "delivery": {
+      "type": "object",
+      "required": ["vmap_url", "debug_url"],
+      "additionalProperties": false,
+      "properties": {
+        "vmap_url": { "type": "string", "format": "uri", "description": "IAB VMAP 1.0 document for the same breaks." },
+        "debug_url": { "type": "string", "format": "uri", "description": "Full decision graph for auditing." }
+      }
+    }
+  },
+  "$defs": {
+    "scene": {
+      "type": ["object", "null"],
+      "required": ["scene_id", "start_sec", "end_sec", "summary", "mood", "activities", "sensitive_contexts"],
+      "additionalProperties": false,
+      "properties": {
+        "scene_id": { "type": "string" },
+        "start_sec": { "type": "number", "minimum": 0 },
+        "end_sec": { "type": "number", "minimum": 0 },
+        "summary": { "type": "string" },
+        "mood": { "type": "array", "items": { "type": "string" } },
+        "activities": { "type": "array", "items": { "type": "string" } },
+        "sensitive_contexts": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "break": {
+      "type": "object",
+      "required": ["break_id", "position", "offset_sec", "timecode", "frame", "resume_offset_sec", "placement", "preceding_scene", "following_scene", "pod_duration_sec", "ads", "on_ad_error"],
+      "additionalProperties": false,
+      "properties": {
+        "break_id": { "type": "string" },
+        "position": { "const": "midroll" },
+        "offset_sec": { "type": "number", "minimum": 0, "description": "Programme time at which to pause and play the pod." },
+        "timecode": { "type": "string", "pattern": "^[0-9]{2}:[0-5][0-9]:[0-5][0-9]:[0-9]{2}$", "description": "HH:MM:SS:FF of offset_sec." },
+        "frame": { "type": "integer", "minimum": 0 },
+        "resume_offset_sec": { "type": "number", "minimum": 0, "description": "Programme time to resume from after the pod." },
+        "placement": {
+          "type": "object",
+          "required": ["source", "confidence_tier", "ad_score", "rationale"],
+          "additionalProperties": false,
+          "properties": {
+            "source": { "enum": ["ai", "manual"] },
+            "candidate_id": { "type": "string" },
+            "confidence_tier": { "enum": ["High", "Medium", "Low", "Reviewer"] },
+            "ad_score": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+            "rationale": { "type": "string" },
+            "signal_scores": { "type": "object", "additionalProperties": { "type": "number", "minimum": 0, "maximum": 1 } },
+            "shot_transition": { "enum": ["cut", "fade", "dissolve"] },
+            "change_type": { "type": "string" },
+            "from_context": { "type": "string" },
+            "to_context": { "type": "string" }
+          }
+        },
+        "preceding_scene": { "$ref": "#/$defs/scene" },
+        "following_scene": { "$ref": "#/$defs/scene" },
+        "pod_duration_sec": { "type": "integer", "minimum": 1 },
+        "ads": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["sequence", "ad_id", "brand_id", "brand_name", "creative_url", "mime_type", "duration_sec", "language", "skippable", "skip_offset_sec", "vast_url"],
+            "additionalProperties": false,
+            "properties": {
+              "sequence": { "type": "integer", "minimum": 1 },
+              "ad_id": { "type": "string" },
+              "brand_id": { "type": "string" },
+              "brand_name": { "type": "string" },
+              "creative_url": { "type": "string", "format": "uri" },
+              "mime_type": { "const": "video/mp4" },
+              "duration_sec": { "type": "integer", "minimum": 1 },
+              "language": { "type": "string" },
+              "skippable": { "type": "boolean" },
+              "skip_offset_sec": { "type": ["integer", "null"], "minimum": 0, "description": "Seconds after the ad starts when the skip button unlocks; null when not skippable." },
+              "click_through_url": { "type": "string", "format": "uri" },
+              "cta_label": { "type": "string", "maxLength": 24 },
+              "vast_url": { "type": "string", "format": "uri" }
+            }
+          }
+        },
+        "on_ad_error": { "const": "skip_ad_and_resume" }
+      }
+    }
+  }
+}

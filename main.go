@@ -13,6 +13,7 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
+	"math"
 	"net/http"
 	"os"
 	"os/exec"
@@ -30,9 +31,16 @@ const (
 	defaultAddr       = ":8080"
 	defaultUploadRoot = "data/uploads"
 	maxUploadBytes    = 500 << 20
-	scenePromptVer    = "scene-evidence-v4-transition-probes"
-	breakPromptVer    = "break-naturalness-v2"
-	analysisVersion   = "phase4-transition-v5"
+	analysisTimeout   = 20 * time.Minute
+	// These mirror ai/versions.py and ai/scene_ai.py; the cache-key parity test runs the Python worker.
+	scenePromptVer  = "scene-describe-v1"
+	breakPromptVer  = "scene-boundary-judge-v3"
+	analysisVersion = "scene-fusion-pipeline-v1"
+	shotDetectorVer = "pyscenedetect-adaptive-threshold+twin-dissolve-v1"
+	clipModelVer    = "clip-vit-b32-onnx-int8-d15189d"
+	audioModelVer   = "yamnet-onnx-qaihub-0.63.0"
+	fusionVer       = "scene-fusion-v1"
+	silenceDetector = "silencedetect:-32dB:0.45s"
 )
 
 type MediaInfo struct {
@@ -43,23 +51,26 @@ type MediaInfo struct {
 	AudioCodec      string  `json:"audioCodec"`
 	HasAudio        bool    `json:"hasAudio"`
 	Format          string  `json:"format"`
+	FrameRate       float64 `json:"frameRate,omitempty"`
 }
 
 type Job struct {
-	ID             string          `json:"id"`
-	FileName       string          `json:"fileName"`
-	FileSize       int64           `json:"fileSize"`
-	Status         string          `json:"status"`
-	Stage          string          `json:"stage"`
-	Progress       int             `json:"progress"`
-	CreatedAt      time.Time       `json:"createdAt"`
-	ContentHash    string          `json:"contentHash"`
-	Media          MediaInfo       `json:"media"`
-	VideoURL       string          `json:"videoUrl"`
-	Message        string          `json:"message"`
-	Transcript     *Transcript     `json:"transcript,omitempty"`
-	PlaybackPlan   *PlaybackPlan   `json:"playback_plan,omitempty"`
-	PlaybackEvents []PlaybackEvent `json:"playback_events,omitempty"`
+	ID             string           `json:"id"`
+	FileName       string           `json:"fileName"`
+	FileSize       int64            `json:"fileSize"`
+	Status         string           `json:"status"`
+	Stage          string           `json:"stage"`
+	Progress       int              `json:"progress"`
+	CreatedAt      time.Time        `json:"createdAt"`
+	ContentHash    string           `json:"contentHash"`
+	Media          MediaInfo        `json:"media"`
+	VideoURL       string           `json:"videoUrl"`
+	Message        string           `json:"message"`
+	Transcript     *Transcript      `json:"transcript,omitempty"`
+	PlaybackPlan   *PlaybackPlan    `json:"playback_plan,omitempty"`
+	PlaybackEvents []PlaybackEvent  `json:"playback_events,omitempty"`
+	Review         *ReviewState     `json:"review,omitempty"`
+	Manifests      []ManifestRecord `json:"manifests,omitempty"`
 }
 
 type server struct {
@@ -203,9 +214,13 @@ func currentAnalysisCacheKey(contentHash string) string {
 		catalogSum := sha256.Sum256(brandCatalogBytes)
 		brandCatalogHash = hex.EncodeToString(catalogSum[:])
 	}
+	embeddingModel := strings.TrimSpace(os.Getenv("OPENAI_EMBEDDING_MODEL"))
+	if embeddingModel == "" {
+		embeddingModel = "text-embedding-3-small"
+	}
 	parts := strings.Join([]string{
 		contentHash, provider, asrModel, sceneModel, scenePromptVer, breakModel, breakPromptVer, analysisVersion,
-		"16", "0.3", "300", "silencedetect:-32dB:0.45s", brandCatalogHash,
+		shotDetectorVer, clipModelVer, audioModelVer, fusionVer, embeddingModel, silenceDetector, brandCatalogHash,
 	}, "|")
 	sum := sha256.Sum256([]byte(parts))
 	return hex.EncodeToString(sum[:])
@@ -239,6 +254,10 @@ func (s *server) routes() http.Handler {
 	mux.HandleFunc("GET /api/jobs/{id}/vmap.xml", s.getVMAP)
 	mux.HandleFunc("GET /api/jobs/{id}/vast/{breakID}", s.getVAST)
 	mux.HandleFunc("GET /api/jobs/{id}/debug.json", s.getPlaybackDebug)
+	mux.HandleFunc("POST /api/jobs/{id}/optimize", s.optimizePlacements)
+	mux.HandleFunc("PUT /api/jobs/{id}/review", s.saveReview)
+	mux.HandleFunc("POST /api/jobs/{id}/finalize", s.finalizePlan)
+	mux.HandleFunc("GET /api/jobs/{id}/manifest.json", s.getManifest)
 	mux.HandleFunc("POST /api/jobs/{id}/playback-events", s.recordPlaybackEvent)
 	mux.HandleFunc("GET /ads/{brandID}/{file}", s.serveCatalogCreative)
 	mux.HandleFunc("GET /api/jobs/{id}", s.getJob)
@@ -483,7 +502,7 @@ func probeVideo(ctx context.Context, path string) (MediaInfo, error) {
 	// Kept separate from the request handler so probe output can be tested and replaced cleanly.
 	commandCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(commandCtx, "ffprobe", "-v", "error", "-show_entries", "format=duration,format_name:stream=codec_type,codec_name,width,height", "-of", "json", path)
+	cmd := exec.CommandContext(commandCtx, "ffprobe", "-v", "error", "-show_entries", "format=duration,format_name:stream=codec_type,codec_name,width,height,avg_frame_rate", "-of", "json", path)
 	output, err := cmd.Output()
 	if err != nil {
 		var exitErr *exec.ExitError
@@ -498,10 +517,11 @@ func probeVideo(ctx context.Context, path string) (MediaInfo, error) {
 			Name     string `json:"format_name"`
 		} `json:"format"`
 		Streams []struct {
-			Type   string `json:"codec_type"`
-			Codec  string `json:"codec_name"`
-			Width  int    `json:"width"`
-			Height int    `json:"height"`
+			Type      string `json:"codec_type"`
+			Codec     string `json:"codec_name"`
+			Width     int    `json:"width"`
+			Height    int    `json:"height"`
+			FrameRate string `json:"avg_frame_rate"`
 		} `json:"streams"`
 	}
 	if err := json.Unmarshal(output, &raw); err != nil {
@@ -514,6 +534,7 @@ func probeVideo(ctx context.Context, path string) (MediaInfo, error) {
 		case "video":
 			if info.VideoCodec == "" {
 				info.VideoCodec, info.Width, info.Height = stream.Codec, stream.Width, stream.Height
+				info.FrameRate = parseFrameRate(stream.FrameRate)
 			}
 		case "audio":
 			if !info.HasAudio {
@@ -525,6 +546,24 @@ func probeVideo(ctx context.Context, path string) (MediaInfo, error) {
 		return MediaInfo{}, fmt.Errorf("No video track was found in this file.")
 	}
 	return info, nil
+}
+
+func parseFrameRate(value string) float64 {
+	numerator, denominator, found := strings.Cut(value, "/")
+	top, err := strconv.ParseFloat(numerator, 64)
+	if err != nil || top <= 0 {
+		return 0
+	}
+	bottom := 1.0
+	if found {
+		if bottom, err = strconv.ParseFloat(denominator, 64); err != nil || bottom <= 0 {
+			return 0
+		}
+	}
+	if rate := top / bottom; rate > 0 && rate <= 240 {
+		return math.Round(rate*1000) / 1000
+	}
+	return 0
 }
 
 func newID() (string, error) {

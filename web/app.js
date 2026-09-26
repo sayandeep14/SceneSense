@@ -32,51 +32,90 @@
   };
   const defaultCreative = (brand) => brand?.creatives.find((creative) => creative.duration_sec === 15) || brand?.creatives[0];
 
-  function loadBreakSelection(jobId, candidates, maxCount, duration, policy) {
-    const key = `scenesense-break-selection:${jobId}`;
-    let state;
-    try { state = JSON.parse(localStorage.getItem(key) || "null"); } catch { state = null; }
-    if (!state || !Array.isArray(state.selected)) {
-      state = {
-        target: Math.min(maxCount, candidates.filter((candidate) => candidate.decision === "accepted").length),
-        selected: candidates.filter((candidate) => candidate.decision === "accepted")
-          .map((candidate) => ({ time: candidate.time, source: "ai", candidateId: candidate.candidate_id })),
-        excludedAI: [],
-      };
-    }
-    if (!Array.isArray(state.excludedAI)) state.excludedAI = [];
-    const cleaned = [];
-    for (const item of [...state.selected].sort((left, right) => left.time - right.time)) {
-      if (!Number.isFinite(item.time) || item.time < 15 || item.time > duration - 10 ||
-          (item.source !== "manual" && !candidates.some((candidate) => candidate.candidate_id === item.candidateId &&
-            (candidate.potential || candidate.decision === "accepted")))) continue;
-      if (cleaned.length >= maxCount || cleaned.some((prior) => Math.abs(prior.time - item.time) < policy.min_gap_seconds)) continue;
-      cleaned.push({ ...item, source: item.source === "manual" ? "manual" : "ai" });
-    }
-    state.selected = cleaned;
-    state.target = Math.min(maxCount, Math.max(state.selected.length, Number(state.target) || 0));
-    return { key, state };
+  const reviewStates = new Map();
+  let reviewSaveTimer = null;
+
+  const fromServerSelection = (item) => ({
+    time: item.time, source: item.source, candidateId: item.candidate_id || undefined, brandId: item.brand_id || "",
+    creativeId: item.creative_id || "", allowSkip: item.allow_skip, skipAfter: item.skip_after_sec,
+    clickUrl: item.click_through_url || "", ctaLabel: item.cta_label || "",
+  });
+
+  function toServerSelection(item) {
+    const duration = catalogBrands.find((brand) => brand.brand_id === item.brandId)?.creatives
+      .find((creative) => creative.id === item.creativeId)?.duration_sec;
+    return {
+      time: item.time, source: item.source, candidate_id: item.candidateId || "", brand_id: item.brandId || "",
+      creative_id: item.creativeId || "", allow_skip: item.allowSkip ?? true,
+      skip_after_sec: item.allowSkip === false ? 0 : Number(item.skipAfter ?? defaultSkipAfter(duration)),
+      click_through_url: item.clickUrl || "", cta_label: item.ctaLabel || "",
+    };
   }
 
-  function saveBreakSelection(key, state) {
-    try { localStorage.setItem(key, JSON.stringify(state)); } catch { /* This session remains editable without storage. */ }
+  function reviewState(job, candidates, maxCount) {
+    if (reviewStates.has(job.id)) return reviewStates.get(job.id);
+    const accepted = candidates.filter((candidate) => candidate.decision === "accepted");
+    let state = null;
+    if (job.review && Array.isArray(job.review.selected)) {
+      state = { target: job.review.target, selected: job.review.selected.map(fromServerSelection),
+        excludedAI: job.review.excluded_ai || [], finalizedRevision: job.review.finalized_revision || 0, dirty: !!job.review.dirty };
+    } else {
+      try {
+        // Edits made before reviews were saved on the server lived only in this browser.
+        const legacy = JSON.parse(localStorage.getItem(`scenesense-break-selection:${job.id}`) || "null");
+        if (legacy && Array.isArray(legacy.selected)) {
+          state = { target: legacy.target, selected: legacy.selected, excludedAI: legacy.excludedAI || [], migrated: true };
+        }
+      } catch { /* No saved browser edits. */ }
+    }
+    state ||= { target: accepted.length, excludedAI: [],
+      selected: accepted.map((candidate) => ({ time: candidate.time, source: "ai", candidateId: candidate.candidate_id })) };
+    state.finalizedRevision ||= (job.manifests || []).length;
+    state.selected = state.selected.filter((item) => Number.isFinite(item.time) &&
+      (item.source === "manual" || candidates.some((candidate) => candidate.candidate_id === item.candidateId && candidate.potential)))
+      .sort((left, right) => left.time - right.time);
+    const manual = state.selected.filter((item) => item.source === "manual").length;
+    state.target = Math.min(maxCount, Math.max(manual, Number(state.target) || state.selected.length));
+    reviewStates.set(job.id, state);
+    return state;
   }
 
-  function selectBestAIBreaks(state, candidates, target, minimumGap) {
-    // Keep ad choices already made for AI markers that remain selected.
+  function saveReview(job, state) {
+    state.dirty = state.finalizedRevision > 0;
+    playbackPlan = null;
+    if (activeJob?.id === job.id) activeJob.playback_plan = null;
+    window.clearTimeout(reviewSaveTimer);
+    reviewSaveTimer = window.setTimeout(async () => {
+      try {
+        const response = await fetch(`/api/jobs/${encodeURIComponent(job.id)}/review`, {
+          method: "PUT", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ breaks: state.selected.map(toServerSelection), target: state.target, excluded_ai: state.excludedAI }),
+        });
+        if (!response.ok) throw new Error((await response.json()).error);
+        job.review = await response.json();
+      } catch (error) {
+        showToast(error.message || "Your review could not be saved; it stays in this tab.");
+      }
+    }, 350);
+  }
+
+  // Ask the server's optimiser for k breaks, keeping reviewer placements and removals, and preserve ad choices.
+  async function rebalance(job, state, target) {
+    const response = await fetch(`/api/jobs/${encodeURIComponent(job.id)}/optimize`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ k: target, pinned: state.selected.filter((item) => item.source === "manual").map((item) => item.time),
+        excluded: state.excludedAI }),
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || "The optimiser could not place these breaks.");
     const previous = new Map(state.selected.filter((item) => item.source === "ai").map((item) => [item.candidateId, item]));
-    const selected = state.selected.filter((item) => item.source === "manual");
-    const eligible = candidates.filter((candidate) => (candidate.potential ||
-      (candidate.potential === undefined && candidate.decision === "accepted")) &&
-      !state.excludedAI.includes(candidate.candidate_id));
-    eligible.sort((left, right) => (right.naturalness - right.disruption_risk) -
-      (left.naturalness - left.disruption_risk) || right.confidence - left.confidence || left.time - right.time);
-    for (const candidate of eligible) {
-      if (selected.length >= target) break;
-      if (selected.some((item) => Math.abs(item.time - candidate.time) < minimumGap)) continue;
-      selected.push(previous.get(candidate.candidate_id) || { time: candidate.time, source: "ai", candidateId: candidate.candidate_id });
-    }
-    state.selected = selected.sort((left, right) => left.time - right.time);
+    state.selected = [...state.selected.filter((item) => item.source === "manual"),
+      ...result.selected.filter((entry) => entry.source === "ai").map((entry) =>
+        previous.get(entry.candidate_id) || { time: entry.time, source: "ai", candidateId: entry.candidate_id })]
+      .sort((left, right) => left.time - right.time);
+    state.target = result.k;
+    state.plan = result;
+    return result;
   }
 
   function placementLimitMessage(state, time, duration, policy, maxCount) {
@@ -116,12 +155,16 @@
     }
     build.disabled = !state.selected.length || !catalogBrands.length;
     play.disabled = !playbackPlan?.breaks?.length;
-    if (playbackPlan?.breaks?.length) {
+    const revision = state.finalizedRevision;
+    const published = revision > 0 && !state.dirty && playbackPlan?.breaks?.length;
+    document.querySelector("#playback-downloads").classList.toggle("hidden", !published);
+    document.querySelector("#finalize-state").textContent = !revision ? "Draft · not finalized"
+      : state.dirty ? `Draft changes since revision ${revision}` : `Final · revision ${revision}`;
+    document.querySelector("#finalize-state").className = `finalize-state${revision && !state.dirty ? " finalize-state-final" : ""}`;
+    if (published) {
+      document.querySelector("#manifest-download").href = `/api/jobs/${encodeURIComponent(job.id)}/manifest.json?revision=${revision}`;
       document.querySelector("#vmap-download").href = playbackPlan.vmap_url;
       document.querySelector("#debug-download").href = playbackPlan.debug_url;
-      document.querySelector("#playback-downloads").classList.remove("hidden");
-    } else {
-      document.querySelector("#playback-downloads").classList.add("hidden");
     }
     if (!catalogBrands.length) {
       status.textContent = "Loading the synthetic brand catalogue…";
@@ -172,38 +215,33 @@
     build.disabled = !allRowsReady;
     if (!allRowsReady) {
       status.textContent = "Choose an ad for every marker: click it on the timeline or use Choose ad. If every brand is blocked after a scene, leave that break out.";
-    } else if (playbackPlan?.breaks?.length === state.selected.length) {
-      status.textContent = "VMAP ready. Play the programme in the player to see every break, skip button, and website link.";
+    } else if (revision && !state.dirty && playbackPlan?.breaks?.length === state.selected.length) {
+      status.textContent = `Revision ${revision} is final. Download the manifest for the OTT player, or play the programme to rehearse every break.`;
     } else {
-      status.textContent = "Brand safety, spacing, and actual ad durations are checked again by the server when you build the VMAP.";
+      status.textContent = "Finalizing re-checks brand safety, spacing, skip rules, and actual ad load, then writes a new manifest revision.";
     }
     build.onclick = async () => {
       build.disabled = true;
-      status.textContent = "Validating creative safety, break spacing, and actual ad-load…";
+      status.textContent = "Checking brand safety, spacing, skip rules, and actual ad load, then writing the manifest…";
       try {
-        const response = await fetch(`/api/jobs/${encodeURIComponent(job.id)}/playback-plan`, {
+        const response = await fetch(`/api/jobs/${encodeURIComponent(job.id)}/finalize`, {
           method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ breaks: state.selected.map((selection) => ({
-            time: selection.time, source: selection.source, brand_id: selection.brandId, creative_id: selection.creativeId,
-            allow_skip: selection.allowSkip ?? true,
-            skip_after_sec: selection.allowSkip === false ? 0 : Number(selection.skipAfter ?? defaultSkipAfter(
-              catalogBrands.find((brand) => brand.brand_id === selection.brandId)?.creatives.find((creative) => creative.id === selection.creativeId)?.duration_sec)),
-            click_through_url: selection.clickUrl || "", cta_label: selection.ctaLabel || "",
-          })) }),
+          body: JSON.stringify({ breaks: state.selected.map(toServerSelection), target: state.target, excluded_ai: state.excludedAI }),
         });
         const payload = await response.json();
-        if (!response.ok) throw new Error(payload.error || "The playback plan could not be validated.");
+        if (!response.ok) throw new Error(payload.error || "The plan could not be finalized.");
         playbackPlan = payload.plan;
         activeJob.playback_plan = playbackPlan;
-        document.querySelector("#vmap-download").href = playbackPlan.vmap_url;
-        document.querySelector("#debug-download").href = playbackPlan.debug_url;
-        document.querySelector("#playback-downloads").classList.remove("hidden");
-        document.querySelector("#play-programme").disabled = playbackPlan.breaks.length === 0;
+        job.review = payload.review;
+        job.manifests = [...(job.manifests || []), { revision: payload.revision }];
+        state.finalizedRevision = payload.revision;
+        state.dirty = false;
         renderPlaybackEventHistory([]);
-        status.textContent = `${payload.break_count} VMAP break${payload.break_count === 1 ? "" : "s"} validated against the ad library.`;
+        renderPlaybackPlanner(job, state, persist);
+        showToast(`Revision ${payload.revision} finalized. The manifest is ready to download.`);
       } catch (error) {
-        showToast(error.message || "Could not create the playback plan.");
-        status.textContent = error.message || "Could not create the playback plan.";
+        showToast(error.message || "Could not finalize the plan.");
+        status.textContent = error.message || "Could not finalize the plan.";
         build.disabled = false;
       }
     };
@@ -568,7 +606,7 @@
     content.append(heading, list, durationLabel, viewer);
     renderDurations();
 
-    confirm.onclick = () => {
+    confirm.onclick = async () => {
       if (existing) {
         Object.assign(existing, { brandId: selectedBrand, creativeId: selectedCreative, ...viewerChoice() });
       } else {
@@ -578,8 +616,11 @@
         state.selected.push({ time, source: "manual", ...(nearby ? { candidateId: nearby.candidate_id } : {}),
           brandId: selectedBrand, creativeId: selectedCreative, ...viewerChoice() });
         state.selected.sort((left, right) => left.time - right.time);
-        state.target = Math.max(state.target, state.selected.length);
-        selectBestAIBreaks(state, candidates, state.target, policy.min_gap_seconds);
+        try {
+          await rebalance(job, state, Math.min(maxCount, state.target + 1));
+        } catch (error) {
+          showToast(error.message);
+        }
       }
       persist();
       cutDialog.close();
@@ -587,11 +628,15 @@
       const brand = suggestions.find((item) => item.brand_id === selectedBrand);
       showToast(`${brand?.display_name || "Ad"} placed at ${formatPrecise(time)}.`);
     };
-    remove.onclick = () => {
+    remove.onclick = async () => {
       if (!existing) return;
       if (existing.candidateId && !state.excludedAI.includes(existing.candidateId)) state.excludedAI.push(existing.candidateId);
       state.selected = state.selected.filter((item) => item !== existing);
-      selectBestAIBreaks(state, candidates, state.target, policy.min_gap_seconds);
+      try {
+        await rebalance(job, state, Math.max(0, state.target - 1));
+      } catch (error) {
+        showToast(error.message);
+      }
       persist();
       cutDialog.close();
       renderBreakDecisions(job);
@@ -942,6 +987,29 @@
     }
   }
 
+  const TIER_CLASS = { High: "tier-high", Medium: "tier-medium", Low: "tier-low" };
+  const SIGNAL_LABELS = [["visual_window", "Visual"], ["audio", "Audio"], ["pause", "Pause"], ["text", "Dialogue"], ["transition", "Fade/dissolve"]];
+
+  function signalBars(scores = {}) {
+    const bars = document.createElement("div");
+    bars.className = "signal-bars";
+    for (const [key, label] of SIGNAL_LABELS) {
+      if (scores[key] === undefined) continue;
+      const bar = document.createElement("span");
+      bar.className = "signal-bar";
+      bar.title = `${label} signal ${Math.round(scores[key] * 100)}%`;
+      const name = document.createElement("span");
+      name.textContent = label;
+      const track = document.createElement("i");
+      const fill = document.createElement("b");
+      fill.style.width = `${Math.round(scores[key] * 100)}%`;
+      track.append(fill);
+      bar.append(name, track);
+      bars.append(bar);
+    }
+    return bars;
+  }
+
   function renderBreakDecisions(job) {
     const transcript = job.transcript;
     const panel = document.querySelector("#break-decisions");
@@ -959,64 +1027,84 @@
     const policy = transcript?.break_policy;
     panel.classList.toggle("hidden", !transcript);
     selectedLayer.classList.toggle("hidden", !transcript);
-    cutsLayer.replaceChildren();
-    potentialLayer.replaceChildren();
-    selectedLayer.replaceChildren();
-    list.replaceChildren();
+    for (const layer of [cutsLayer, potentialLayer, selectedLayer, list]) layer.replaceChildren();
     empty.classList.add("hidden");
     warning.classList.add("hidden");
     breakContext = null;
     if (!transcript) return;
-    if (!policy?.version) {
-      empty.textContent = "This saved analysis predates break selection. Re-run it with current AI to edit markers.";
+    if (!policy?.version || !candidates.every((candidate) => "scene_change" in candidate)) {
+      empty.textContent = "This saved analysis predates scene-change detection. Re-run it with current AI to plan breaks.";
       empty.classList.remove("hidden");
+      document.querySelector("#break-meta").textContent = "Re-run needed.";
       return;
     }
 
     const duration = Number(transcript.duration) || 0;
-    const maxByLoad = Math.floor((policy.max_ad_load_percent / 100) * duration /
-      ((1 - policy.max_ad_load_percent / 100) * policy.planned_ad_seconds));
-    const maxByGap = Math.max(0, Math.floor(Math.max(0, duration - 25) / policy.min_gap_seconds) + 1);
-    const maxCount = Math.max(0, Math.min(policy.max_break_count || Math.ceil(duration / 1800 * 4), maxByLoad, maxByGap));
-    const potentials = candidates.filter((item) => item.potential ||
-      (item.potential === undefined && item.decision === "accepted"));
-    const { key, state } = loadBreakSelection(job.id, candidates, maxCount, duration, policy);
-    const persist = () => {
-      saveBreakSelection(key, state);
-      playbackPlan = null;
-      if (activeJob?.id === job.id) activeJob.playback_plan = null;
-      document.querySelector("#playback-downloads").classList.add("hidden");
-      document.querySelector("#play-programme").disabled = true;
+    const maxCount = policy.max_break_count || 0;
+    const state = reviewState(job, candidates, maxCount);
+    const persist = () => saveReview(job, state);
+    if (state.migrated) {
+      delete state.migrated;
+      persist();
+    }
+    const rerender = () => renderBreakDecisions(job);
+    const applyTarget = async (target) => {
+      try {
+        await rebalance(job, state, target);
+        persist();
+      } catch (error) {
+        showToast(error.message);
+      }
+      rerender();
     };
-    breakContext = { job, state, persist, policy, maxCount, duration, candidates };
+    if (!state.plan) {
+      // Load the optimiser's explanations for the current plan without changing it.
+      state.plan = { outcomes: [] };
+      rebalance(job, state, state.target).then(rerender).catch(() => {});
+    }
+    breakContext = { job, state, persist, policy, maxCount, duration, candidates, rerender };
     const seek = document.querySelector("#review-seek");
     seek.max = String(duration);
     seek.value = String(video.currentTime || 0);
     document.querySelector("#review-time").value = formatDuration(video.currentTime || 0);
     seek.oninput = () => { video.currentTime = Number(seek.value); };
 
+    const place = (time, inset) => `${Math.max(inset, Math.min(100 - inset, time / duration * 100))}%`;
+    const kinds = new Map((transcript.shot_transitions || []).map((item) => [item.time, item.kind]));
     for (const cut of transcript.shot_boundaries || []) {
       const marker = document.createElement("button");
       marker.type = "button";
-      marker.className = "cut-marker";
-      marker.style.left = `${Math.max(0.4, Math.min(99.6, cut / duration * 100))}%`;
-      marker.title = `Shot cut ${formatPrecise(cut)} · choose an ad`;
+      marker.className = `cut-marker cut-${kinds.get(cut) || "cut"}`;
+      marker.style.left = place(cut, 0.4);
+      marker.title = `Shot ${kinds.get(cut) || "cut"} ${formatPrecise(cut)} · choose an ad`;
       marker.setAttribute("aria-label", marker.title);
       marker.onclick = () => openCutDialog(cut);
       cutsLayer.append(marker);
     }
 
+    const outcomes = new Map((state.plan.outcomes || []).map((item) => [item.candidate_id, item]));
     const isSelected = (candidate) => state.selected.some((item) =>
-      item.candidateId === candidate.candidate_id || Math.abs(item.time - candidate.time) < 0.05);
-    for (const candidate of potentials) {
+      item.candidateId === candidate.candidate_id || Math.abs(item.time - candidate.time) < 0.5);
+    const sceneChanges = candidates.filter((candidate) => candidate.scene_change);
+    for (const candidate of sceneChanges) {
       const marker = document.createElement("button");
       marker.type = "button";
-      marker.className = `potential-marker${isSelected(candidate) ? " potential-marker-selected" : ""}`;
-      marker.style.left = `${Math.max(0.6, Math.min(99.4, candidate.time / duration * 100))}%`;
-      marker.title = `${isSelected(candidate) ? "Selected" : "AI potential"} ${formatDuration(candidate.time)} · ${Math.round(candidate.confidence * 100)}% confidence`;
+      marker.className = `potential-marker ${candidate.potential ? TIER_CLASS[candidate.tier] || "tier-low" : "tier-blocked"}${isSelected(candidate) ? " potential-marker-selected" : ""}`;
+      marker.style.left = place(candidate.time, 0.6);
+      marker.title = `Scene change ${formatPrecise(candidate.time)} · ${candidate.potential ? `${candidate.tier} ad-friendliness` : "blocked"}`;
       marker.setAttribute("aria-label", marker.title);
       marker.onclick = () => openCutDialog(candidate.time);
       potentialLayer.append(marker);
+    }
+    for (const item of state.selected) {
+      const marker = document.createElement("button");
+      marker.type = "button";
+      marker.className = `break-marker break-marker-accepted${item.source === "manual" ? " break-marker-manual" : ""}`;
+      marker.style.left = place(item.time, 0.8);
+      marker.title = `${item.source === "manual" ? "Reviewer" : "AI selected"} ad break at ${formatDuration(item.time)} · edit ad`;
+      marker.setAttribute("aria-label", marker.title);
+      marker.onclick = () => openCutDialog(item.time);
+      selectedLayer.append(marker);
     }
 
     const manualCount = state.selected.filter((item) => item.source === "manual").length;
@@ -1024,44 +1112,46 @@
     countRange.max = String(maxCount);
     countRange.value = String(state.target);
     countValue.value = String(state.target);
-    countRange.oninput = () => {
-      state.target = Number(countRange.value);
-      selectBestAIBreaks(state, candidates, state.target, policy.min_gap_seconds);
-      persist();
-      renderBreakDecisions(job);
-    };
-    const selectedAI = state.selected.filter((item) => item.source === "ai").length;
-    status.textContent = state.selected.length < state.target
-      ? `Only ${selectedAI} AI-safe point${selectedAI === 1 ? "" : "s"} found. Add ${state.target - state.selected.length} manual marker${state.target - state.selected.length === 1 ? "" : "s"} to reach ${state.target}.`
-      : `${state.selected.length} of ${maxCount} allowed · ${manualCount} manual · ${policy.min_gap_seconds}s minimum spacing. Saved in this browser.`;
-    document.querySelector("#break-meta").textContent = `${(transcript.shot_boundaries || []).length} cuts · ${potentials.length} AI potential · ${state.selected.length} selected · maximum ${maxCount}`;
-    if (transcript.break_scoring_error) {
-      warning.textContent = transcript.break_scoring_error;
+    countRange.oninput = () => { countValue.value = countRange.value; };
+    countRange.onchange = () => applyTarget(Number(countRange.value));
+    document.querySelector("#break-recommend").onclick = () => applyTarget(policy.auto_break_count);
+    document.querySelector("#break-recommend").disabled = state.target === policy.auto_break_count && !manualCount && !state.excludedAI.length;
+
+    const adSeconds = state.selected.length * policy.planned_ad_seconds;
+    const load = duration ? adSeconds / (duration + adSeconds) * 100 : 0;
+    document.querySelector("#break-funnel").replaceChildren(...[
+      [transcript.shot_boundaries?.length || 0, "shot boundaries", "n"],
+      [policy.scene_change_count, "scene changes", "m"],
+      [state.selected.length, "ad breaks", "k"],
+    ].map(([value, label, letter]) => {
+      const cell = document.createElement("div");
+      const number = document.createElement("strong");
+      number.textContent = String(value);
+      const caption = document.createElement("span");
+      caption.textContent = `${letter} · ${label}`;
+      cell.append(number, caption);
+      return cell;
+    }));
+    document.querySelector("#break-meta").textContent = `System recommends ${policy.auto_break_count} of at most ${maxCount} · ` +
+      `min gap ${formatDuration(policy.min_gap_seconds)} · planned ad load ${load.toFixed(1)}% of ${policy.max_ad_load_percent}%`;
+    status.textContent = state.plan.message || policy.summary || "";
+    if (transcript.break_scoring_error || transcript.text_signal_error) {
+      warning.textContent = [transcript.break_scoring_error, transcript.text_signal_error].filter(Boolean).join(" ");
       warning.classList.remove("hidden");
     }
-    if (!candidates.length && !state.selected.length) {
-      empty.textContent = "AI found no safe ad point. Review the video with the precise slider and place a marker if you find a suitable moment.";
+    if (!sceneChanges.length && !state.selected.length) {
+      empty.textContent = "No real scene change was found. Review the video with the precise slider and place a break if you find a suitable moment.";
       empty.classList.remove("hidden");
     }
+    document.querySelector("#add-break-marker").onclick = () => openCutDialog(Number(video.currentTime));
 
-    const addMarker = document.querySelector("#add-break-marker");
-    addMarker.onclick = () => openCutDialog(Number(video.currentTime));
-
-    for (const item of state.selected) {
-      const marker = document.createElement("button");
-      marker.type = "button";
-      marker.className = `break-marker break-marker-accepted${item.source === "manual" ? " break-marker-manual" : ""}`;
-      marker.style.left = `${Math.max(0.8, Math.min(99.2, item.time / duration * 100))}%`;
-      marker.title = `${item.source === "manual" ? "Manual" : "AI selected"} ad marker at ${formatDuration(item.time)} · edit ad`;
-      marker.setAttribute("aria-label", marker.title);
-      marker.onclick = () => openCutDialog(item.time);
-      selectedLayer.append(marker);
-    }
-
-    for (const candidate of candidates) {
+    const card = (candidate) => {
       const selected = isSelected(candidate);
-      const card = document.createElement("li");
-      card.className = `break-card ${selected ? "break-card-accepted" : candidate.potential ? "break-card-potential" : "break-card-rejected"}`;
+      const outcome = outcomes.get(candidate.candidate_id);
+      const excluded = state.excludedAI.includes(candidate.candidate_id);
+      const item = document.createElement("li");
+      const tierClass = candidate.potential ? TIER_CLASS[candidate.tier] || "tier-low" : "tier-blocked";
+      item.className = `break-card ${selected ? "break-card-accepted" : candidate.potential ? "break-card-potential" : "break-card-rejected"}`;
       const header = document.createElement("div");
       header.className = "break-card-header";
       const time = document.createElement("button");
@@ -1069,61 +1159,65 @@
       time.className = "break-time";
       time.textContent = formatDuration(candidate.time);
       time.onclick = () => { video.currentTime = candidate.time; };
+      const tier = document.createElement("span");
+      tier.className = `tier-badge ${tierClass}`;
+      tier.textContent = candidate.potential ? `${candidate.tier} · ${Math.round(candidate.ad_score * 100)}` : "Blocked";
       const verdict = document.createElement("span");
       verdict.className = `break-verdict ${selected ? "break-verdict-accepted" : candidate.potential ? "break-verdict-potential" : "break-verdict-rejected"}`;
-      verdict.textContent = selected ? "SELECTED" : candidate.potential ? "AI POTENTIAL" : "WITHHELD";
-      header.append(time, verdict);
-      const score = document.createElement("p");
-      score.className = "break-score";
-      score.textContent = `Break naturalness ${Math.round(candidate.naturalness * 100)}% · disruption ${Math.round(candidate.disruption_risk * 100)}% · confidence ${Math.round(candidate.confidence * 100)}%`;
-      const mood = document.createElement("p");
-      mood.className = "break-signals";
-      mood.textContent = `Preceding mood: ${candidate.preceding_scene_mood || "unclear"}${candidate.preceding_sensitive_contexts?.length ? ` · caution: ${candidate.preceding_sensitive_contexts.join(", ")}` : ""}`;
+      verdict.textContent = selected ? "SELECTED" : excluded ? "REMOVED" : candidate.potential ? "AVAILABLE" : "WITHHELD";
+      header.append(time, tier, verdict);
+      const rationale = document.createElement("p");
+      rationale.className = "break-rationale";
+      rationale.textContent = candidate.rationale || candidate.ai_reason;
+      const context = document.createElement("p");
+      context.className = "break-signals";
+      context.textContent = `${candidate.shot_transition || "cut"} · mood before: ${candidate.preceding_scene_mood || "unclear"}${candidate.preceding_sensitive_contexts?.length ? ` · caution: ${candidate.preceding_sensitive_contexts.join(", ")}` : ""}`;
+      const note = document.createElement("p");
+      note.className = "break-policy-reason";
+      note.textContent = candidate.potential ? (outcome?.note || candidate.selection_note || "") : (candidate.reasons || []).map((reason) => reason.message).join(" ");
       const brandFit = document.createElement("p");
       brandFit.className = "break-brand-fit";
       const bestBrand = candidate.brand_recommendations?.[0];
-      brandFit.textContent = bestBrand
-        ? `Best contextual brand fit: ${bestBrand.display_name} · ${Math.round(bestBrand.fit_score * 100)}% · ${bestBrand.reason}`
-        : "No safe brand fit was identified for the preceding scene.";
-      if (candidate.blocked_brand_matches?.length) {
-        const blocked = document.createElement("span");
-        blocked.className = "break-brand-blocks";
-        blocked.textContent = `Blocked by context: ${candidate.blocked_brand_matches.map((item) => `${item.display_name} (${item.blocked_contexts.join(", ")})`).join(" · ")}`;
-        brandFit.append(document.createElement("br"), blocked);
-      }
-      const rationale = document.createElement("p");
-      rationale.className = "break-rationale";
-      rationale.textContent = candidate.ai_reason || candidate.scene_context || "Candidate from media evidence.";
-      const signals = document.createElement("p");
-      signals.className = "break-signals";
-      signals.textContent = `Evidence: ${(candidate.signals || []).map((value) => value.replaceAll("_", " ")).join(" · ")}`;
-      const reasons = document.createElement("p");
-      reasons.className = "break-policy-reason";
-      reasons.textContent = selected && state.selected.some((item) => item.source === "manual" && item.candidateId === candidate.candidate_id)
-        ? "Human selected this time. Review the scene mood and story before playback."
-        : candidate.potential ? (candidate.transition_evidence || "Passed AI scene, speech, pause, and confidence checks; spacing limits still apply.")
-          : (candidate.reasons || []).map((reason) => reason.message).join(" ");
-      card.append(header, score, mood, brandFit, rationale, signals, reasons);
-      if (selected) {
-        const remove = document.createElement("button");
-        remove.type = "button";
-        remove.className = "remove-break-marker";
-        remove.textContent = "Remove marker";
-        remove.onclick = () => {
-          if (!state.excludedAI.includes(candidate.candidate_id)) state.excludedAI.push(candidate.candidate_id);
-          state.selected = state.selected.filter((item) => item.candidateId !== candidate.candidate_id && Math.abs(item.time - candidate.time) >= 0.05);
-          selectBestAIBreaks(state, candidates, state.target, policy.min_gap_seconds);
-          persist();
-          renderBreakDecisions(job);
+      brandFit.textContent = bestBrand ? `Best brand fit: ${bestBrand.display_name} · ${Math.round(bestBrand.fit_score * 100)}% · ${bestBrand.reason}` : "No safe brand fit identified for the preceding scene.";
+      const actions = document.createElement("div");
+      actions.className = "break-card-actions";
+      const choose = document.createElement("button");
+      choose.type = "button";
+      choose.className = "remove-break-marker";
+      choose.textContent = selected ? "Edit ad…" : "Inspect & choose ad…";
+      choose.onclick = () => openCutDialog(candidate.time);
+      actions.append(choose);
+      if (candidate.potential) {
+        const toggle = document.createElement("button");
+        toggle.type = "button";
+        toggle.className = "remove-break-marker";
+        toggle.textContent = selected ? "Remove" : excluded ? "Allow again" : "Force include";
+        toggle.onclick = async () => {
+          if (selected) {
+            state.excludedAI = [...new Set([...state.excludedAI, candidate.candidate_id])];
+            state.selected = state.selected.filter((entry) => entry.candidateId !== candidate.candidate_id);
+            await applyTarget(Math.max(manualCount, state.target - 1));
+          } else if (excluded) {
+            state.excludedAI = state.excludedAI.filter((id) => id !== candidate.candidate_id);
+            await applyTarget(state.target);
+          } else {
+            const issue = placementLimitMessage({ selected: state.selected.filter((entry) => entry.source === "manual") },
+              candidate.time, duration, policy, maxCount);
+            if (issue) { showToast(issue); return; }
+            state.selected.push({ time: candidate.time, source: "manual", candidateId: candidate.candidate_id });
+            await applyTarget(Math.min(maxCount, state.target + 1));
+          }
         };
-        card.append(remove);
+        actions.append(toggle);
       }
-      list.append(card);
-    }
-    for (const item of state.selected.filter((selection) => !candidates.some((candidate) =>
-      candidate.candidate_id === selection.candidateId || Math.abs(candidate.time - selection.time) < 0.5))) {
-      const card = document.createElement("li");
-      card.className = "break-card break-card-accepted";
+      item.append(header, rationale, context, signalBars(candidate.signal_scores), note, brandFit, actions);
+      return item;
+    };
+    sceneChanges.forEach((candidate) => list.append(card(candidate)));
+    for (const item of state.selected.filter((entry) => !candidates.some((candidate) =>
+      candidate.candidate_id === entry.candidateId || Math.abs(candidate.time - entry.time) < 0.5))) {
+      const manual = document.createElement("li");
+      manual.className = "break-card break-card-accepted";
       const header = document.createElement("div");
       header.className = "break-card-header";
       const time = document.createElement("button");
@@ -1133,30 +1227,42 @@
       time.onclick = () => { video.currentTime = item.time; };
       const verdict = document.createElement("span");
       verdict.className = "break-verdict break-verdict-accepted";
-      verdict.textContent = "MANUAL MARKER";
+      verdict.textContent = "REVIEWER BREAK";
       header.append(time, verdict);
-      const note = document.createElement("p");
-      note.className = "break-policy-reason";
-      note.textContent = "Placed outside the AI potential list. Check preceding-scene mood, dialogue, and sensitive context.";
-      const sceneMatches = precedingSceneBrandMatches(transcript, item.time);
-      const safeMatch = sceneMatches.find((match) => match.recommended && !match.blocked);
-      const brandFit = document.createElement("p");
-      brandFit.className = "break-brand-fit";
-      brandFit.textContent = safeMatch
-        ? `Preceding-scene brand fit: ${safeMatch.display_name} · ${Math.round(safeMatch.fit_score * 100)}% · ${safeMatch.reason}`
-        : "No safe brand fit for the preceding scene; choose a brand manually or leave the break unfilled.";
-      const remove = document.createElement("button");
-      remove.type = "button";
-      remove.className = "remove-break-marker";
-      remove.textContent = "Remove marker";
-      remove.onclick = () => {
-        state.selected = state.selected.filter((selection) => selection !== item);
-        selectBestAIBreaks(state, candidates, state.target, policy.min_gap_seconds);
-        persist();
-        renderBreakDecisions(job);
-      };
-      card.append(header, note, brandFit, remove);
-      list.append(card);
+      const noteText = document.createElement("p");
+      noteText.className = "break-policy-reason";
+      noteText.textContent = "Placed outside the detected scene changes. Check the scene mood, dialogue, and sensitive context before finalizing.";
+      const edit = document.createElement("button");
+      edit.type = "button";
+      edit.className = "remove-break-marker";
+      edit.textContent = "Edit or remove…";
+      edit.onclick = () => openCutDialog(item.time);
+      manual.append(header, noteText, edit);
+      list.append(manual);
+    }
+    const sameScene = candidates.filter((candidate) => !candidate.scene_change);
+    if (sameScene.length) {
+      const holder = document.createElement("li");
+      holder.className = "break-card same-scene-group";
+      const details = document.createElement("details");
+      const summary = document.createElement("summary");
+      summary.textContent = `${sameScene.length} likely boundar${sameScene.length === 1 ? "y was" : "ies were"} judged camera changes inside a scene`;
+      const rows = document.createElement("ul");
+      for (const candidate of sameScene) {
+        const row = document.createElement("li");
+        const time = document.createElement("button");
+        time.type = "button";
+        time.className = "break-time";
+        time.textContent = formatDuration(candidate.time);
+        time.onclick = () => { video.currentTime = candidate.time; };
+        const text = document.createElement("span");
+        text.textContent = candidate.ai_reason || candidate.rationale;
+        row.append(time, text);
+        rows.append(row);
+      }
+      details.append(summary, rows);
+      holder.append(details);
+      list.append(holder);
     }
     renderPlaybackPlanner(job, state, persist);
   }

@@ -10,7 +10,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"time"
 )
 
 type TranscriptWord struct {
@@ -38,7 +37,19 @@ type SceneEvidence struct {
 	Confidence        float64           `json:"confidence"`
 	Evidence          []string          `json:"evidence"`
 	ShotBoundaries    []float64         `json:"shot_boundaries"`
+	ShotCount         int               `json:"shot_count,omitempty"`
 	BrandMatches      []SceneBrandMatch `json:"brand_matches"`
+}
+
+type ShotTransition struct {
+	Time     float64 `json:"time"`
+	Kind     string  `json:"kind"`
+	Strength float64 `json:"strength"`
+}
+
+type TimeInterval struct {
+	Start float64 `json:"start"`
+	End   float64 `json:"end"`
 }
 
 type SceneBrandMatch struct {
@@ -87,6 +98,13 @@ type Transcript struct {
 	ScenePromptVersion   string               `json:"scene_prompt_version"`
 	SceneAnalysisError   string               `json:"scene_analysis_error,omitempty"`
 	ShotBoundaries       []float64            `json:"shot_boundaries"`
+	ShotTransitions      []ShotTransition     `json:"shot_transitions"`
+	ShotCount            int                  `json:"shot_count"`
+	SpeechFreeIntervals  []TimeInterval       `json:"speech_free_intervals"`
+	FusionShortlistCount int                  `json:"fusion_shortlist_count"`
+	UnheardSegmentCount  int                  `json:"unheard_segment_count"`
+	TextSignalError      string               `json:"text_signal_error,omitempty"`
+	Pipeline             map[string]string    `json:"pipeline,omitempty"`
 	ShotDetectionStatus  string               `json:"shot_detection_status"`
 	ShotDetectionError   string               `json:"shot_detection_error,omitempty"`
 	ContentHash          string               `json:"content_hash"`
@@ -108,21 +126,65 @@ type workerRequest struct {
 	ContentHash string `json:"content_hash"`
 }
 
-func runAIWorker(ctx context.Context, pythonBin, workerPath, videoPath, workDir, brandsPath, contentHash string) (Transcript, error) {
+// progressWriter forwards "@@progress {json}" lines from the worker's stderr and keeps the rest as error text.
+type progressWriter struct {
+	pending  []byte
+	errors   bytes.Buffer
+	onUpdate func(stage string, progress int, message string)
+}
+
+func (p *progressWriter) Write(data []byte) (int, error) {
+	p.pending = append(p.pending, data...)
+	for {
+		index := bytes.IndexByte(p.pending, '\n')
+		if index < 0 {
+			break
+		}
+		p.handle(string(p.pending[:index]))
+		p.pending = p.pending[index+1:]
+	}
+	return len(data), nil
+}
+
+func (p *progressWriter) handle(line string) {
+	if payload, ok := strings.CutPrefix(line, "@@progress "); ok {
+		var update struct {
+			Stage    string `json:"stage"`
+			Progress int    `json:"progress"`
+			Message  string `json:"message"`
+		}
+		if json.Unmarshal([]byte(payload), &update) == nil && p.onUpdate != nil && update.Stage != "" &&
+			update.Progress >= 0 && update.Progress <= 100 && len(update.Message) <= 300 {
+			p.onUpdate(update.Stage, update.Progress, update.Message)
+		}
+		return
+	}
+	p.errors.WriteString(line + "\n")
+}
+
+func runAIWorker(ctx context.Context, pythonBin, workerPath, videoPath, workDir, brandsPath, contentHash string,
+	onProgress func(stage string, progress int, message string)) (Transcript, error) {
 	input, err := json.Marshal(workerRequest{VideoPath: videoPath, WorkDir: workDir, BrandsPath: brandsPath, ContentHash: contentHash})
 	if err != nil {
 		return Transcript{}, errors.New("could not prepare AI worker input")
 	}
 	command := exec.CommandContext(ctx, pythonBin, workerPath)
 	command.Stdin = bytes.NewReader(input)
-	var stdout, stderr bytes.Buffer
+	var stdout bytes.Buffer
+	stderr := &progressWriter{onUpdate: onProgress}
 	command.Stdout = &stdout
-	command.Stderr = &stderr
+	command.Stderr = stderr
 	if err := command.Run(); err != nil {
 		if ctx.Err() != nil {
 			return Transcript{}, errors.New("AI analysis timed out")
 		}
-		message := strings.TrimSpace(stderr.String())
+		if len(stderr.pending) > 0 {
+			stderr.handle(string(stderr.pending))
+		}
+		message := strings.TrimSpace(stderr.errors.String())
+		if lines := strings.Split(message, "\n"); len(lines) > 3 {
+			message = strings.Join(lines[len(lines)-3:], "\n")
+		}
 		if message == "" {
 			return Transcript{}, errors.New("AI worker could not complete transcription")
 		}
@@ -183,6 +245,15 @@ func validateTranscriptGo(transcript Transcript) error {
 			return errors.New("AI worker returned invalid shot-cut timestamps")
 		}
 		previousCut = cut
+	}
+	previousShot := 0.0
+	validShotKinds := map[string]bool{"cut": true, "fade": true, "dissolve": true}
+	for _, shot := range transcript.ShotTransitions {
+		if shot.Time <= previousShot || (transcript.Duration > 0 && shot.Time >= transcript.Duration) ||
+			!validShotKinds[shot.Kind] || !unitInterval(shot.Strength) {
+			return errors.New("AI worker returned invalid shot transition evidence")
+		}
+		previousShot = shot.Time
 	}
 	previousTransition := -1.0
 	seenProbes := make(map[string]bool, len(transcript.Transitions))
@@ -246,9 +317,10 @@ func (s *server) transcribeJob(id string) {
 	}
 	s.jobsMu.Unlock()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), analysisTimeout)
 	defer cancel()
-	transcript, err := runAIWorker(ctx, s.pythonBin, s.workerPath, s.uploadPath(id), s.uploadDir, s.brandsPath, job.ContentHash)
+	transcript, err := runAIWorker(ctx, s.pythonBin, s.workerPath, s.uploadPath(id), s.uploadDir, s.brandsPath, job.ContentHash,
+		func(stage string, progress int, message string) { s.updateJobProgress(id, stage, progress, message) })
 	s.jobsMu.Lock()
 	defer s.jobsMu.Unlock()
 	job, exists = s.jobs[id]
@@ -284,6 +356,18 @@ func (s *server) transcribeJob(id string) {
 	if err := s.persistJob(job); err != nil {
 		s.logger.Error("persist final job state", "job_id", id, "error", err)
 	}
+}
+
+// updateJobProgress records the worker's current stage so the dashboard can show it while analysis runs.
+func (s *server) updateJobProgress(id, stage string, progress int, message string) {
+	s.jobsMu.Lock()
+	defer s.jobsMu.Unlock()
+	job, exists := s.jobs[id]
+	if !exists || job.Status != "processing" {
+		return
+	}
+	job.Stage, job.Progress, job.Message = stage, progress, message
+	s.jobs[id] = job
 }
 
 func (s *server) uploadPath(id string) string {
