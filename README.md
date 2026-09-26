@@ -6,6 +6,8 @@ An AI-first contextual ad placement MVP for Bengali video. This repository is be
 
 **Phases 0–5 are deployed.** Go handles uploads, jobs, and deterministic policy. The Python worker supports Bengali ASR via Sarvam Saaras v4 or Groq Whisper, detects low-audio intervals and shot cuts, and asks OpenAI for structured scene evidence and break naturalness scores. A Go policy rejects breaks during speech, uncertain or sensitive scenes, and unfinished thoughts, and enforces pacing and ad-load limits. The UI shows accepted and withheld moments with seekable markers and exact reasons; Phase 5 adds VMAP planning and playback with local placeholder creatives. A saved analysis can be opened with `?job=<id>`. The hosted positive selection was verified on a constructed two-scene test fixture; the tested unmodified real excerpts had no eligible break and were correctly withheld.
 
+An optional polished story visualizer lives at `/demo/`. It uses a static-exported Next.js frontend with Three.js and GSAP, reads the existing Go APIs, and links back to the full working studio for edits and playback. It needs no additional runtime service or API key; the Docker build embeds its static output in the Go binary. The original studio remains the primary editing surface.
+
 ## Run locally
 
 Requirements: Go 1.25+, Python 3.12+, and FFmpeg/ffprobe on `PATH`.
@@ -14,6 +16,8 @@ Requirements: Go 1.25+, Python 3.12+, and FFmpeg/ffprobe on `PATH`.
 make setup   # .venv with the pinned worker dependencies, plus the ONNX models (SHA-256 verified)
 make run
 ```
+
+For the optional local `/demo/` page, run `cd frontend && npm ci && npm run build`, copy the generated `frontend/out` contents into the ignored `web/demo` directory, then restart the Go app. Node 22+ is only needed to build the static page; the Docker build does this automatically.
 
 `make run` loads the ignored `.env` file and starts the Go app with the `.venv` Python. Set `ASR_PROVIDER=groq` (default) with `GROQ_API_KEY`, or `ASR_PROVIDER=sarvam` with `SARVAM_API_KEY`. Set `OPENAI_API_KEY` for the boundary judge, scene descriptions, and transcript embeddings; optional overrides are `OPENAI_VISION_MODEL`, `OPENAI_BREAK_MODEL`, and `OPENAI_EMBEDDING_MODEL`. Never commit these keys. `DEMO_ACCESS_PASSWORD` enables HTTP Basic Auth (username `demo`); Railway deployments refuse to start without it, and `/healthz` stays public. Uploads and job sidecars live in `UPLOAD_DIR` (default `data/uploads`); `AD_LIBRARY_DIR` defaults to `<UPLOAD_DIR>/ads`, and `MODELS_DIR` to `models`.
 

@@ -85,6 +85,10 @@ jobs:
           done
           curl --fail --silent http://127.0.0.1:18080/api/observability | grep -q 'events_received'
           curl --fail --silent http://127.0.0.1:18080/ | grep -q "Make every break"
+          curl --fail --silent http://127.0.0.1:18080/demo/ | grep -q "Find the"
+          demo_css=$(curl --fail --silent http://127.0.0.1:18080/demo/ | grep -oE '/demo/_next/static/chunks/[^" ]+\.css' | sed -n '1p')
+          test -n "$demo_css"
+          curl --fail --silent "http://127.0.0.1:18080$demo_css" | grep 'hero' >/dev/null
           docker exec contextual-ad-lab-ci python3 --version
           docker exec -w /app/ai contextual-ad-lab-ci python3 -c "import numpy, onnxruntime, cv2, scenedetect, PIL, visual, audio; visual._session(); audio._model(); print('models ok')"
           docker stop contextual-ad-lab-ci
