@@ -493,5 +493,8 @@
       addToLibrary(job);
       if (job.status === "queued" || job.status === "processing") watchJob(job.id);
     });
+    const requestedJob = new URLSearchParams(window.location.search).get("job");
+    const selected = jobs.find((job) => job.id === requestedJob);
+    if (selected) showJob(selected);
   }).catch(() => {});
 })();
