@@ -418,15 +418,17 @@ func (s *server) transcribeJob(id, fromPhase string) {
 		s.logger.Error("persist running job state", "job_id", id, "error", err)
 	}
 	s.jobsMu.Unlock()
+	s.observeStage(id, job.Stage)
 
 	defer cancel()
 	transcript, err := runAIWorker(ctx, s.pythonBin, s.workerPath, request,
 		func(stage string, progress int, message string) { s.updateJobProgress(id, stage, progress, message) })
 	s.jobsMu.Lock()
-	defer s.jobsMu.Unlock()
 	delete(s.analysisCancels, id)
 	job, exists = s.jobs[id]
 	if !exists || job.Status == "cancelled" {
+		s.jobsMu.Unlock()
+		s.observeFinish(id, "error")
 		return
 	}
 	if err != nil {
@@ -459,18 +461,29 @@ func (s *server) transcribeJob(id, fromPhase string) {
 	if err := s.persistJob(job); err != nil {
 		s.logger.Error("persist final job state", "job_id", id, "error", err)
 	}
+	s.jobsMu.Unlock()
+	if err != nil {
+		s.observeFinish(id, "error")
+	} else {
+		s.observeFinish(id, "ok")
+	}
 }
 
 // updateJobProgress records the worker's current stage so the dashboard can show it while analysis runs.
 func (s *server) updateJobProgress(id, stage string, progress int, message string) {
 	s.jobsMu.Lock()
-	defer s.jobsMu.Unlock()
 	job, exists := s.jobs[id]
 	if !exists || job.Status != "processing" {
+		s.jobsMu.Unlock()
 		return
 	}
+	changed := job.Stage != stage
 	job.Stage, job.Progress, job.Message = stage, progress, message
 	s.jobs[id] = job
+	s.jobsMu.Unlock()
+	if changed {
+		s.observeStage(id, stage)
+	}
 }
 
 func (s *server) uploadPath(id string) string {

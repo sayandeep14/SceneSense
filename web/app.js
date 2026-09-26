@@ -18,6 +18,38 @@
   let dialogRequest = 0;
   const pollingJobs = new Set();
   const cutDialog = document.querySelector("#cut-dialog");
+  const observerReport = document.querySelector("#observer-report");
+
+  async function refreshObserver() {
+    observerReport.textContent = "Reading pipeline telemetry…";
+    try {
+      const response = await fetch("/api/observability", { cache: "no-store" });
+      if (!response.ok) throw new Error("Telemetry is unavailable.");
+      const snapshot = await response.json();
+      if (snapshot.status === "unavailable") {
+        observerReport.textContent = "Collector is starting, or no snapshot is available yet. Analysis and playback are unaffected.";
+        return;
+      }
+      observerReport.replaceChildren();
+      const summary = document.createElement("p");
+      summary.textContent = `${snapshot.events_received || 0} events · ${snapshot.packets_rejected || 0} rejected packets`;
+      observerReport.append(summary);
+      for (const [name, metric] of Object.entries(snapshot.metrics || {}).sort()) {
+        const row = document.createElement("div");
+        row.className = "observer-metric";
+        const average = metric.count ? Math.round(metric.total_ms / metric.count) : 0;
+        row.textContent = `${name.replaceAll("_", " ")} · ${metric.count} run${metric.count === 1 ? "" : "s"} · ${average} ms avg · ${metric.errors} errors`;
+        observerReport.append(row);
+      }
+      const events = document.createElement("p");
+      events.textContent = Object.entries(snapshot.event_counts || {}).map(([name, count]) => `${name}: ${count}`).join(" · ") || "No delivery events yet.";
+      observerReport.append(events);
+    } catch (error) {
+      observerReport.textContent = error.message || "Telemetry is unavailable.";
+    }
+  }
+
+  document.querySelector("#refresh-observer").addEventListener("click", refreshObserver);
 
   const formatDuration = (seconds) => {
     const total = Math.max(0, Math.floor(seconds));
@@ -1249,6 +1281,61 @@
     return bars;
   }
 
+  function renderPolicyEvidence(job, state, policy, duration, maxCount) {
+    const holder = document.querySelector("#policy-evidence");
+    holder.replaceChildren();
+    if (!state || !policy || !duration) {
+      const note = document.createElement("p");
+      note.textContent = job?.transcript ? "Finish scene analysis to see this video's break limits."
+        : "Choose a video to see its break limits.";
+      holder.append(note);
+      return;
+    }
+    const selected = [...state.selected].sort((left, right) => left.time - right.time);
+    const plannedSeconds = Number(policy.planned_ad_seconds) || 15;
+    let estimated = 0;
+    const adSeconds = selected.reduce((sum, item) => {
+      const creative = catalogBrands.find((brand) => brand.brand_id === item.brandId)?.creatives
+        .find((entry) => entry.id === item.creativeId);
+      if (!creative) estimated++;
+      return sum + (Number(creative?.duration_sec) || plannedSeconds);
+    }, 0);
+    const adLoad = adSeconds / (duration + adSeconds) * 100;
+    const minGap = Number(policy.min_gap_seconds) || 0;
+    const smallestGap = selected.slice(1).reduce((lowest, item, index) =>
+      Math.min(lowest, item.time - selected[index].time), Infinity);
+    const first = selected[0]?.time ?? Infinity;
+    const tail = selected.length ? duration - selected.at(-1).time : Infinity;
+    const rows = [
+      ["Breaks", `${selected.length} / ${maxCount}`, `At most ${policy.max_breaks_per_hour || 8} per hour; this video's cap is ${maxCount}.`, selected.length > maxCount],
+      ["Spacing", selected.length > 1 ? `${formatDuration(smallestGap)} closest` : `${formatDuration(minGap)} minimum`,
+        selected.length > 1 ? `${formatDuration(minGap)} required between breaks.` : "Applies when two or more breaks are selected.", smallestGap < minGap],
+      ["Programme edges", selected.length ? `${formatDuration(first)} in · ${formatDuration(tail)} left` : "15s in · 10s left",
+        "Every break needs at least 15s before it and 10s after it.", first < 15 || tail < 10],
+      ["Ad load", `${adLoad.toFixed(1)}% / ${Number(policy.max_ad_load_percent).toFixed(0)}%`,
+        `${formatDuration(adSeconds)} ads ÷ (${formatDuration(duration)} programme + ${formatDuration(adSeconds)} ads)${estimated ? ` · ${estimated} duration${estimated === 1 ? "" : "s"} estimated until an ad is chosen` : " · selected ad durations"}.`,
+        adLoad > Number(policy.max_ad_load_percent)],
+    ];
+    for (const [name, value, detail, overLimit] of rows) {
+      const row = document.createElement("div");
+      row.className = `policy-evidence-row${overLimit ? " policy-evidence-warning" : ""}`;
+      const heading = document.createElement("div");
+      const label = document.createElement("strong");
+      label.textContent = name;
+      const amount = document.createElement("span");
+      amount.textContent = value;
+      const explanation = document.createElement("p");
+      explanation.textContent = detail;
+      heading.append(label, amount);
+      row.append(heading, explanation);
+      holder.append(row);
+    }
+    const note = document.createElement("p");
+    note.className = "policy-evidence-note";
+    note.textContent = "Finalizing rechecks these limits and the scene's brand safety on the server.";
+    holder.append(note);
+  }
+
   function renderBreakDecisions(job) {
     const transcript = job.transcript;
     const panel = document.querySelector("#break-decisions");
@@ -1270,7 +1357,10 @@
     empty.classList.add("hidden");
     warning.classList.add("hidden");
     breakContext = null;
-    if (!transcript) return;
+    if (!transcript) {
+      renderPolicyEvidence(job);
+      return;
+    }
     const busy = job.status === "queued" || job.status === "processing";
     const unfinished = busy || transcript.break_scoring_status !== "complete" || !policy?.version ||
       !candidates.every((candidate) => "scene_change" in candidate);
@@ -1282,6 +1372,7 @@
           : "This analysis predates scene-change detection. Use “Re-run” on Scene analysis above; the transcript is kept.";
       empty.classList.remove("hidden");
       document.querySelector("#break-meta").textContent = busy ? "Analysing…" : "Scene analysis needed.";
+      renderPolicyEvidence(job);
       return;
     }
 
@@ -1380,6 +1471,7 @@
     }));
     document.querySelector("#break-meta").textContent = `System recommends ${policy.auto_break_count} of at most ${maxCount} · ` +
       `min gap ${formatDuration(policy.min_gap_seconds)} · planned ad load ${load.toFixed(1)}% of ${policy.max_ad_load_percent}%`;
+    renderPolicyEvidence(job, state, policy, duration, maxCount);
     status.textContent = state.plan.message || policy.summary || "";
     if (transcript.break_scoring_error || transcript.text_signal_error) {
       warning.textContent = [transcript.break_scoring_error, transcript.text_signal_error].filter(Boolean).join(" ");
@@ -1593,6 +1685,7 @@
     activeJob = null;
     playbackPlan = null;
     breakContext = null;
+    renderPolicyEvidence(null);
     const video = document.querySelector("#video-preview");
     video.removeAttribute("src");
     video.load();
