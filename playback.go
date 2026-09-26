@@ -531,6 +531,7 @@ func (s *server) recordPlaybackEvent(w http.ResponseWriter, r *http.Request) {
 		s.logger.Warn("persist playback event", "job_id", job.ID, "event", event.Event, "error", err)
 	}
 	s.jobsMu.Unlock()
+	s.observeEvent(job.ID, event.Event)
 	w.WriteHeader(http.StatusNoContent)
 }
 

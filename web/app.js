@@ -18,6 +18,38 @@
   let dialogRequest = 0;
   const pollingJobs = new Set();
   const cutDialog = document.querySelector("#cut-dialog");
+  const observerReport = document.querySelector("#observer-report");
+
+  async function refreshObserver() {
+    observerReport.textContent = "Reading pipeline telemetry…";
+    try {
+      const response = await fetch("/api/observability", { cache: "no-store" });
+      if (!response.ok) throw new Error("Telemetry is unavailable.");
+      const snapshot = await response.json();
+      if (snapshot.status === "unavailable") {
+        observerReport.textContent = "Collector is starting, or no snapshot is available yet. Analysis and playback are unaffected.";
+        return;
+      }
+      observerReport.replaceChildren();
+      const summary = document.createElement("p");
+      summary.textContent = `${snapshot.events_received || 0} events · ${snapshot.packets_rejected || 0} rejected packets`;
+      observerReport.append(summary);
+      for (const [name, metric] of Object.entries(snapshot.metrics || {}).sort()) {
+        const row = document.createElement("div");
+        row.className = "observer-metric";
+        const average = metric.count ? Math.round(metric.total_ms / metric.count) : 0;
+        row.textContent = `${name.replaceAll("_", " ")} · ${metric.count} run${metric.count === 1 ? "" : "s"} · ${average} ms avg · ${metric.errors} errors`;
+        observerReport.append(row);
+      }
+      const events = document.createElement("p");
+      events.textContent = Object.entries(snapshot.event_counts || {}).map(([name, count]) => `${name}: ${count}`).join(" · ") || "No delivery events yet.";
+      observerReport.append(events);
+    } catch (error) {
+      observerReport.textContent = error.message || "Telemetry is unavailable.";
+    }
+  }
+
+  document.querySelector("#refresh-observer").addEventListener("click", refreshObserver);
 
   const formatDuration = (seconds) => {
     const total = Math.max(0, Math.floor(seconds));

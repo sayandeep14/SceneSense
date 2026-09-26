@@ -40,6 +40,12 @@ jobs:
       - name: Test
         run: go test -race ./...
 
+      - name: Test Rust observer
+        run: cargo test --manifest-path telemetry/Cargo.toml --offline
+
+      - name: Rust format check
+        run: cargo fmt --manifest-path telemetry/Cargo.toml --check
+
       - name: Install AI worker dependencies
         run: pip install --no-deps -r ai/requirements.txt
 
@@ -71,6 +77,13 @@ jobs:
             sleep 1
           done
           curl --fail --silent http://127.0.0.1:18080/healthz
+          for attempt in {1..20}; do
+            if curl --fail --silent http://127.0.0.1:18080/api/observability | grep -q 'events_received'; then
+              break
+            fi
+            sleep 1
+          done
+          curl --fail --silent http://127.0.0.1:18080/api/observability | grep -q 'events_received'
           curl --fail --silent http://127.0.0.1:18080/ | grep -q "Make every break"
           docker exec contextual-ad-lab-ci python3 --version
           docker exec -w /app/ai contextual-ad-lab-ci python3 -c "import numpy, onnxruntime, cv2, scenedetect, PIL, visual, audio; visual._session(); audio._model(); print('models ok')"

@@ -88,6 +88,7 @@ type server struct {
 	adLibraryMu   sync.Mutex
 	demoPassword  string
 	analysisSlots chan struct{}
+	telemetry     *telemetrySink
 }
 
 func newServer(logger *slog.Logger, uploadDir string) *server {
@@ -246,6 +247,7 @@ func (s *server) routes() http.Handler {
 	}
 	mux.HandleFunc("GET /healthz", s.health)
 	mux.HandleFunc("GET /api/jobs", s.listJobs)
+	mux.HandleFunc("GET /api/observability", s.getObservability)
 	mux.HandleFunc("GET /api/brands", s.listBrands)
 	mux.HandleFunc("POST /api/ads", s.uploadAd)
 	mux.HandleFunc("GET /api/jobs/{id}/ad-suggestions", s.adSuggestions)
@@ -372,6 +374,7 @@ func (s *server) listJobs(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *server) createJob(w http.ResponseWriter, r *http.Request) {
+	started := time.Now()
 	r.Body = http.MaxBytesReader(w, r.Body, maxUploadBytes+(1<<20))
 	if err := r.ParseMultipartForm(8 << 20); err != nil {
 		writeError(w, http.StatusBadRequest, "Choose an MP4 file smaller than 500 MB.")
@@ -499,6 +502,7 @@ func (s *server) createJob(w http.ResponseWriter, r *http.Request) {
 	if s.aiEnabled {
 		go s.transcribeJob(id, "")
 	}
+	s.observeDuration(id, "upload", "ok", time.Since(started))
 	writeJSON(w, http.StatusCreated, job)
 }
 
@@ -693,6 +697,7 @@ func main() {
 		os.Exit(1)
 	}
 	app := newServer(logger, uploadDir)
+	app.telemetry = newTelemetrySink()
 	if err := os.MkdirAll(app.adLibraryDir, 0o750); err != nil {
 		logger.Error("create ad library directory", "error", err)
 		os.Exit(1)
