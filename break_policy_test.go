@@ -49,7 +49,7 @@ func TestBreakPolicyAcceptsVerifiedNaturalPause(t *testing.T) {
 
 func TestBreakPolicyRejectsSpeechAndUnfinishedThought(t *testing.T) {
 	transcript := policyFixture(80, 40)
-	transcript.Segments = []TranscriptSegment{{Text: "আমি এখন বলছি", Start: 30, End: 45}}
+	transcript.Segments = []TranscriptSegment{{Text: "আমি এখন বলছি", Start: 38, End: 42}}
 	applyBreakPolicy(&transcript)
 	if !hasReason(transcript.BreakCandidates[0], "active_speech") {
 		t.Fatalf("speech overlap was accepted: %+v", transcript.BreakCandidates[0])
@@ -62,6 +62,25 @@ func TestBreakPolicyRejectsSpeechAndUnfinishedThought(t *testing.T) {
 	if !hasReason(transcript.BreakCandidates[0], "unfinished_sentence") ||
 		!hasReason(transcript.BreakCandidates[0], "ongoing_dialogue") {
 		t.Fatalf("unfinished phrase was accepted: %+v", transcript.BreakCandidates[0])
+	}
+}
+
+func TestCoarseASRNeedsPauseAtCompletedSceneBoundary(t *testing.T) {
+	transcript := policyFixture(80, 40)
+	transcript.Segments = []TranscriptSegment{{Text: "একটি দীর্ঘ সারভাম বাক্য।", Start: 0, End: 75}}
+	applyBreakPolicy(&transcript)
+	if !hasReason(transcript.BreakCandidates[0], "coarse_asr_timing") {
+		t.Fatalf("mid-scene pause with broad ASR timing was accepted: %+v", transcript.BreakCandidates[0])
+	}
+
+	transcript.Scenes = []SceneEvidence{
+		{SceneID: "one", Start: 0, End: 40, Summary: "The conversation finishes", DialogueState: "completed_thought", Confidence: 0.9},
+		{SceneID: "two", Start: 40, End: 80, Summary: "A new scene begins", DialogueState: "completed_thought", Confidence: 0.9},
+	}
+	transcript.BreakCandidates[0].Signals = []string{"low_audio_pause", "scene_end"}
+	applyBreakPolicy(&transcript)
+	if transcript.BreakCandidates[0].Decision != "accepted" {
+		t.Fatalf("verified pause at completed scene boundary was rejected: %+v", transcript.BreakCandidates[0])
 	}
 }
 

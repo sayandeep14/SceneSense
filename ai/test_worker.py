@@ -28,6 +28,18 @@ class WorkerTests(unittest.TestCase):
                          {"scene_end", "low_audio_pause", "shot_cut", "sentence_end"})
         self.assertIn("কথা শেষ।", candidates[0]["before_text"])
 
+    def test_break_candidate_marks_sarvam_chunk_timing_as_coarse(self):
+        candidates = breaks.generate_candidates({
+            "duration": 80,
+            "scenes": [{"start": 0, "end": 40, "summary": "The scene ends."}],
+            "segments": [{"start": 25, "end": 50, "text": "অনেক কথা বলা হলো।"}],
+            "silence_intervals": [{"start": 39, "end": 41, "duration": 2}],
+            "shot_boundaries": [],
+        })
+        candidate = next(item for item in candidates if abs(item["time"] - 40) < 2)
+        self.assertEqual(candidate["timing_quality"], "coarse")
+        self.assertIn("অনেক কথা", candidate["before_text"])
+
     def test_break_scoring_requires_all_ids_and_valid_ranges(self):
         candidates = breaks.generate_candidates({
             "duration": 80, "scenes": [], "segments": [],

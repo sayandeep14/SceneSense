@@ -94,6 +94,25 @@ func terminalSentence(text string) bool {
 	return len(runes) > 0 && strings.ContainsRune("।.!?？", runes[len(runes)-1])
 }
 
+func completedSceneBoundary(transcript *Transcript, candidate *BreakCandidate) bool {
+	hasSceneEndSignal := false
+	for _, signal := range candidate.Signals {
+		if signal == "scene_end" {
+			hasSceneEndSignal = true
+			break
+		}
+	}
+	if !hasSceneEndSignal {
+		return false
+	}
+	for _, scene := range transcript.Scenes {
+		if math.Abs(scene.End-candidate.Time) <= 1.2 && scene.DialogueState == "completed_thought" {
+			return true
+		}
+	}
+	return false
+}
+
 func candidateEvidenceReasons(transcript *Transcript, candidate *BreakCandidate) {
 	time := candidate.Time
 	if transcript.SceneAnalysisStatus != "complete" {
@@ -131,7 +150,11 @@ func candidateEvidenceReasons(transcript *Transcript, candidate *BreakCandidate)
 	for index := range transcript.Segments {
 		segment := &transcript.Segments[index]
 		if segment.Start < time+0.1 && segment.End > time-0.1 {
-			addReason(candidate, "active_speech", "A spoken phrase overlaps the proposed cut.")
+			if segment.End-segment.Start <= 6 || len(segment.Words) > 0 {
+				addReason(candidate, "active_speech", "A spoken phrase overlaps the proposed cut.")
+			} else if !pauseFound || !completedSceneBoundary(transcript, candidate) {
+				addReason(candidate, "coarse_asr_timing", "Broad transcript timing requires a verified pause at a completed scene boundary.")
+			}
 			break
 		}
 		if segment.End <= time+0.1 {

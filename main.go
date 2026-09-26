@@ -31,8 +31,8 @@ const (
 	defaultUploadRoot = "data/uploads"
 	maxUploadBytes    = 500 << 20
 	scenePromptVer    = "scene-evidence-v2"
-	breakPromptVer    = "break-naturalness-v1"
-	analysisVersion   = "phase3-break-v1"
+	breakPromptVer    = "break-naturalness-v2"
+	analysisVersion   = "phase3-break-v2"
 )
 
 type MediaInfo struct {
