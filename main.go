@@ -75,20 +75,21 @@ type Job struct {
 }
 
 type server struct {
-	logger        *slog.Logger
-	uploadDir     string
-	jobsMu        sync.RWMutex
-	jobs          map[string]Job
-	byHash        map[string]string
-	aiEnabled     bool
-	pythonBin     string
-	workerPath    string
-	brandsPath    string
-	adLibraryDir  string
-	adLibraryMu   sync.Mutex
-	demoPassword  string
-	analysisSlots chan struct{}
-	telemetry     *telemetrySink
+	logger          *slog.Logger
+	uploadDir       string
+	jobsMu          sync.RWMutex
+	jobs            map[string]Job
+	byHash          map[string]string
+	aiEnabled       bool
+	pythonBin       string
+	workerPath      string
+	brandsPath      string
+	adLibraryDir    string
+	adLibraryMu     sync.Mutex
+	demoPassword    string
+	analysisSlots   chan struct{}
+	analysisCancels map[string]context.CancelFunc
+	telemetry       *telemetrySink
 }
 
 func newServer(logger *slog.Logger, uploadDir string) *server {
@@ -113,6 +114,7 @@ func newServer(logger *slog.Logger, uploadDir string) *server {
 		logger: logger, uploadDir: uploadDir, jobs: make(map[string]Job), byHash: make(map[string]string),
 		pythonBin: pythonBin, workerPath: workerPath, brandsPath: brandsPath, adLibraryDir: adLibraryDir,
 		demoPassword: strings.TrimSpace(os.Getenv("DEMO_ACCESS_PASSWORD")), analysisSlots: make(chan struct{}, 1),
+		analysisCancels: make(map[string]context.CancelFunc),
 	}
 	app.restoreJobs()
 	return app
@@ -254,6 +256,7 @@ func (s *server) routes() http.Handler {
 	mux.HandleFunc("POST /api/jobs", s.createJob)
 	mux.HandleFunc("POST /api/jobs/{id}/transcribe", s.retryTranscription)
 	mux.HandleFunc("POST /api/jobs/{id}/retry", s.retryPhase)
+	mux.HandleFunc("POST /api/jobs/{id}/cancel", s.cancelAnalysis)
 	mux.HandleFunc("DELETE /api/jobs/{id}", s.deleteJob)
 	mux.HandleFunc("DELETE /api/ads/{brandID}", s.deleteAdBrand)
 	mux.HandleFunc("DELETE /api/ads/{brandID}/{creativeID}", s.deleteAdCreative)
@@ -309,6 +312,33 @@ func (s *server) retryPhase(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.startAnalysis(w, r.PathValue("id"), body.From)
+}
+
+func (s *server) cancelAnalysis(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	s.jobsMu.Lock()
+	job, exists := s.jobs[id]
+	if !exists {
+		s.jobsMu.Unlock()
+		writeError(w, http.StatusNotFound, "Analysis job not found.")
+		return
+	}
+	if job.Status != "queued" && job.Status != "processing" {
+		s.jobsMu.Unlock()
+		writeJSON(w, http.StatusConflict, job)
+		return
+	}
+	job.Status, job.Stage = "cancelled", "analysis_cancelled"
+	job.Message = "Analysis was stopped. You can retry from transcription or the saved transcript."
+	s.jobs[id] = job
+	if err := s.persistJob(job); err != nil {
+		s.logger.Error("persist cancelled job state", "job_id", id, "error", err)
+	}
+	if cancel := s.analysisCancels[id]; cancel != nil {
+		cancel()
+	}
+	s.jobsMu.Unlock()
+	writeJSON(w, http.StatusOK, job)
 }
 
 func (s *server) startAnalysis(w http.ResponseWriter, id, fromPhase string) {

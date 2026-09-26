@@ -1739,8 +1739,8 @@
       { name: "Upload", state: "done", detail: `${formatDuration(job.media.durationSeconds)} · ${job.media.width}×${job.media.height}` },
       {
         name: "Transcription", phase: "transcription",
-        state: transcript ? "done" : inTranscription || busy ? "running" : job.status === "failed" ? "failed" : "waiting",
-        detail: transcript ? `${transcript.segments.length} segments · ${transcript.model}` : job.status === "failed" ? job.message : busy ? job.message : "Not started",
+        state: transcript ? "done" : inTranscription || busy ? "running" : ["failed", "cancelled"].includes(job.status) ? "failed" : "waiting",
+        detail: transcript ? `${transcript.segments.length} segments · ${transcript.model}` : ["failed", "cancelled"].includes(job.status) ? job.message : busy ? job.message : "Not started",
       },
       {
         name: "Scene analysis", phase: "scene_analysis",
@@ -1777,6 +1777,24 @@
         row.append(button);
       }
       holder.append(row);
+    }
+    if (busy) {
+      const stop = document.createElement("button");
+      stop.type = "button";
+      stop.className = "outline-button";
+      stop.textContent = "Stop analysis";
+      stop.addEventListener("click", async () => {
+        if (!window.confirm("Stop this analysis? You can retry it later.")) return;
+        try {
+          const response = await fetch(`/api/jobs/${encodeURIComponent(job.id)}/cancel`, { method: "POST" });
+          const updated = await response.json();
+          if (!response.ok) throw new Error(updated.error || "Analysis could not be stopped.");
+          showJob(updated);
+        } catch (error) {
+          showToast(error.message || "Analysis could not be stopped.");
+        }
+      });
+      holder.append(stop);
     }
   }
 

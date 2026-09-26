@@ -399,6 +399,8 @@ func (s *server) transcribeJob(id, fromPhase string) {
 		return
 	}
 	job.Status, job.Stage, job.Progress = "processing", "transcribing_bengali_speech", 28
+	ctx, cancel := context.WithTimeout(context.Background(), analysisTimeout)
+	s.analysisCancels[id] = cancel
 	job.Message = "Preparing audio and transcribing Bengali speech with timestamps."
 	request := workerRequest{VideoPath: s.uploadPath(id), WorkDir: s.uploadDir, BrandsPath: s.brandsPath,
 		ContentHash: job.ContentHash, FromPhase: fromPhase}
@@ -418,14 +420,15 @@ func (s *server) transcribeJob(id, fromPhase string) {
 	s.jobsMu.Unlock()
 	s.observeStage(id, job.Stage)
 
-	ctx, cancel := context.WithTimeout(context.Background(), analysisTimeout)
 	defer cancel()
 	transcript, err := runAIWorker(ctx, s.pythonBin, s.workerPath, request,
 		func(stage string, progress int, message string) { s.updateJobProgress(id, stage, progress, message) })
 	s.jobsMu.Lock()
+	delete(s.analysisCancels, id)
 	job, exists = s.jobs[id]
-	if !exists {
+	if !exists || job.Status == "cancelled" {
 		s.jobsMu.Unlock()
+		s.observeFinish(id, "error")
 		return
 	}
 	if err != nil {

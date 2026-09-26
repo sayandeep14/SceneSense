@@ -69,6 +69,7 @@ The container includes Go, Python 3, FFmpeg, and a standalone Rust telemetry col
 - `GET /api/brands` — built-in catalogue merged with uploaded ads (`source`: `builtin` or `custom`)
 - `POST /api/ads` — multipart ad upload: `video` (MP4, up to 120 s / 200 MB), `brand_name`, `category`, `target_contexts`, `negative_contexts` (comma-separated), `language`
 - `POST /api/jobs/{id}/retry` — `{"from": "transcription" | "scene_analysis"}` restarts from that phase; a scene-analysis retry reuses the saved transcript (it is saved as soon as ASR finishes)
+- `POST /api/jobs/{id}/cancel` — stop queued or running analysis, persist a retryable cancelled state, and terminate the active worker process
 - `DELETE /api/jobs/{id}` — delete a video with its analysis, review, manifests, and cached transcript/analysis (refused while it is being analysed)
 - `DELETE /api/ads/{brandID}` and `DELETE /api/ads/{brandID}/{creativeID}` — remove an uploaded brand or one of its ads; built-in brands cannot be removed
 - `POST /api/jobs/{id}/optimize` — `{"k", "pinned", "excluded"}` → the best-spaced `k` breaks with an explanation for every candidate
