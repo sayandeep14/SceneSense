@@ -18,6 +18,55 @@
   let dialogRequest = 0;
   const pollingJobs = new Set();
   const cutDialog = document.querySelector("#cut-dialog");
+  let balancedProposal = null;
+  document.querySelector("#balance-ads").addEventListener("click", async () => {
+    const preview = document.querySelector("#balance-preview");
+    const apply = document.querySelector("#apply-balanced-ads");
+    const context = breakContext;
+    balancedProposal = null;
+    apply.classList.add("hidden");
+    if (!context?.state.selected.length) {
+      preview.textContent = "Choose at least one break first.";
+      return;
+    }
+    preview.textContent = "Balancing safe brands across the full episode…";
+    try {
+      const response = await fetch(`/api/jobs/${encodeURIComponent(context.job.id)}/balance-ads`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ times: context.state.selected.map((item) => item.time) }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Brand balancing is unavailable.");
+      if (breakContext?.job.id !== context.job.id) return;
+      balancedProposal = { jobId: context.job.id, assignments: data.assignments };
+      preview.replaceChildren();
+      for (const assignment of data.assignments) {
+        const brand = catalogBrands.find((item) => item.brand_id === assignment.brand_id);
+        const row = document.createElement("div");
+        row.className = "balance-row";
+        row.textContent = `${formatDuration(assignment.time)} · ${brand?.display_name || "No safe brand"} ${assignment.category ? `(${assignment.category})` : ""} · ${assignment.reason}`;
+        preview.append(row);
+      }
+      apply.classList.toggle("hidden", !data.assignments.some((item) => item.brand_id));
+    } catch (error) {
+      preview.textContent = error.message || "Brand balancing is unavailable.";
+    }
+  });
+  document.querySelector("#apply-balanced-ads").addEventListener("click", () => {
+    const context = breakContext;
+    if (!balancedProposal || !context || balancedProposal.jobId !== context.job.id) return;
+    for (const assignment of balancedProposal.assignments) {
+      const selected = context.state.selected.find((item) => Math.abs(item.time - assignment.time) < 0.05);
+      if (selected && assignment.brand_id) {
+        selected.brandId = assignment.brand_id;
+        selected.creativeId = assignment.creative_id;
+      }
+    }
+    context.persist();
+    context.rerender();
+    document.querySelector("#apply-balanced-ads").classList.add("hidden");
+    showToast("Balanced brands added to your draft. Finalize to validate the full plan.");
+  });
   const observerReport = document.querySelector("#observer-report");
 
   async function refreshObserver() {

@@ -75,6 +75,7 @@ The container includes Go, Python 3, FFmpeg, and a standalone Rust telemetry col
 - `PUT /api/jobs/{id}/review` — save the reviewer's working plan
 - `POST /api/jobs/{id}/finalize` — validate and publish a new manifest revision; `GET /api/jobs/{id}/manifest.json[?revision=n]` downloads it
 - `GET /api/jobs/{id}/ad-suggestions?time=<seconds>` — scene before/after a cut and every brand ranked for it, with hard blocks
+- `POST /api/jobs/{id}/balance-ads` — preview context-safe brand choices across sorted break times, avoiding repeat brands within two breaks and preferring category variety; apply them to the draft from the UI
 - `POST /api/jobs/{id}/playback-plan` — each break also takes `allow_skip`, `skip_after_sec`, `click_through_url`, and `cta_label`; VAST carries them as `skipoffset` and `ClickThrough`
 
 ## Ad library and cut review
