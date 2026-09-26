@@ -34,7 +34,7 @@ def fake_model(scene_changes=True):
         return {"scenes": [{
             "scene_id": scene_id, "summary": "Two people talk calmly.", "activities": ["conversation"],
             "tone": ["calm"], "sensitive_contexts": [], "dialogue_state": "completed_thought", "confidence": 0.9,
-            "evidence": ["Two people visible."],
+            "emotional_intensity": 0.2, "valence": 0.3, "evidence": ["Two people visible."],
             "brand_matches": [{"brand_id": brand["brand_id"], "fit_score": 0.6, "matched_contexts": ["conversation"],
                                "reason": "Everyday talk."} for brand in brands],
         } for scene_id in re.findall(r"Scene (scene-\d+) \(", text)]}
@@ -51,6 +51,34 @@ class FusionTests(unittest.TestCase):
     def test_shortlist_keeps_strongest_boundary_per_neighbourhood(self):
         scored = [{"time": t, "scene_score": s} for t, s in [(10, 0.5), (14, 0.8), (40, 0.25), (60, 0.4), (70, 0.35)]]
         self.assertEqual([item["time"] for item in fusion.shortlist(scored, 100)], [14, 60])
+
+
+class PacingTests(unittest.TestCase):
+    def test_intense_scene_is_a_peak_a_cliffhanger_before_a_scene_change_and_calm_is_a_valley(self):
+        import pacing
+
+        scenes = [
+            {"scene_id": "calm", "start": 0.0, "end": 60.0, "tone": ["calm"], "emotional_intensity": 0.1},
+            {"scene_id": "fight", "start": 60.0, "end": 95.0, "tone": ["confrontational", "tense"], "emotional_intensity": 0.95},
+            {"scene_id": "after", "start": 95.0, "end": 200.0, "tone": ["quiet"], "emotional_intensity": 0.15},
+        ]
+        rapid_cuts = [60.0 + i * 1.5 for i in range(22)]  # fast editing during the fight
+        result = pacing.build_pacing(200.0, scenes, None, rapid_cuts, [95.0])
+        self.assertEqual(len(result["tension"]), 100)
+        self.assertTrue(all(0 <= value <= 1 for value in result["tension"]))
+        self.assertEqual(len(result["peaks"]), 1, result["peaks"])
+        peak = result["peaks"][0]
+        self.assertTrue(60 <= peak["time"] <= 95)
+        self.assertEqual((peak["kind"], peak["scene_change"], peak["label"]), ("cliffhanger", 95.0, "confrontational, tense"))
+        self.assertTrue(any(valley["time"] < 55 or valley["time"] > 110 for valley in result["valleys"]))
+        self.assertIn("1 dramatic peak(s), 1 just before a scene change", result["summary"])
+
+    def test_without_scene_ratings_the_curve_uses_audio_and_editing_only(self):
+        import pacing
+
+        result = pacing.build_pacing(30.0, [{"scene_id": "old", "start": 0, "end": 30}], None, [5, 6, 7], [])
+        self.assertTrue(all(value is None for value in result["components"]["scene"]))
+        self.assertGreater(max(result["tension"]), 0)
 
 
 class AdFriendlinessTests(unittest.TestCase):
@@ -289,6 +317,8 @@ class ShotDetectionTests(unittest.TestCase):
             self.assertAlmostEqual(time, expected, delta=0.25)
         self.assertEqual(len(result["shot_boundaries"]), 7)
         self.assertEqual(result["unheard_segment_count"], 3)
+        self.assertEqual(len(result["pacing"]["tension"]), int(-(-self.truth["duration"] // 2)))
+        self.assertTrue(all(scene["emotional_intensity"] == 0.2 for scene in result["scenes"]))
         self.assertTrue(all(not item["before_text"] and not item["after_text"] for item in result["break_candidates"]))
         self.assertEqual(len(result["scenes"]), 4)
         self.assertTrue(all(item["tier"] in ("High", "Medium", "Low") and item["rationale"] for item in result["break_candidates"]))

@@ -122,3 +122,23 @@ func TestAIWorkerRejectsInvalidOutput(t *testing.T) {
 		t.Fatalf("error = %v, want invalid segment timestamps", err)
 	}
 }
+
+func TestPacingAndSceneEmotionAreRangeChecked(t *testing.T) {
+	high, low := 1.4, -2.0
+	for _, transcript := range []Transcript{
+		{Duration: 10, Scenes: []SceneEvidence{{SceneID: "a", Start: 0, End: 5, Summary: "x", Confidence: 0.9, EmotionalIntensity: &high}}},
+		{Duration: 10, Scenes: []SceneEvidence{{SceneID: "a", Start: 0, End: 5, Summary: "x", Confidence: 0.9, Valence: &low}}},
+		{Duration: 10, Pacing: &PacingMap{StepSec: 2, Tension: []float64{0.2, 1.3}}},
+		{Duration: 10, Pacing: &PacingMap{StepSec: 2, Tension: make([]float64, 40)}},
+		{Duration: 10, Pacing: &PacingMap{StepSec: 2, Tension: []float64{0.2}, Peaks: []PacingPoint{{Time: 99, Value: 0.8}}}},
+	} {
+		if err := validateTranscriptGo(transcript); err == nil {
+			t.Fatalf("invalid emotion or pacing accepted: %+v", transcript)
+		}
+	}
+	valid := Transcript{Duration: 10, Pacing: &PacingMap{StepSec: 2, Tension: []float64{0.1, 0.9, 0.4},
+		Peaks: []PacingPoint{{Time: 2, Value: 0.9, Kind: "cliffhanger"}}}}
+	if err := validateTranscriptGo(valid); err != nil {
+		t.Fatal(err)
+	}
+}

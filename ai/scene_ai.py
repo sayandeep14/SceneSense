@@ -18,7 +18,7 @@ from typing import Any, Callable
 
 OPENAI_API_URL = "https://api.openai.com/v1/responses"
 BOUNDARY_PROMPT_VERSION = "scene-boundary-judge-v4-paired-frames"
-SCENE_DESCRIBE_PROMPT_VERSION = "scene-describe-v2-keyframe-grid"
+SCENE_DESCRIBE_PROMPT_VERSION = "scene-describe-v3-emotion"
 BOUNDARY_BATCH, SCENE_BATCH, PARALLEL_REQUESTS = 8, 6, 2
 # gpt-4o-mini bills every low-detail image as ~2,833 input tokens, so images dominate the budget.
 IMAGE_TOKENS = 2833
@@ -64,7 +64,7 @@ BOUNDARY_SCHEMA: dict[str, Any] = {
 SCENE_ITEM_SCHEMA: dict[str, Any] = {
     "type": "object", "additionalProperties": False,
     "required": ["scene_id", "summary", "activities", "tone", "sensitive_contexts", "dialogue_state", "confidence",
-                 "evidence", "brand_matches"],
+                 "emotional_intensity", "valence", "evidence", "brand_matches"],
     "properties": {
         "scene_id": {"type": "string"},
         "summary": {"type": "string"},
@@ -73,6 +73,8 @@ SCENE_ITEM_SCHEMA: dict[str, Any] = {
         "sensitive_contexts": {"type": "array", "items": {"type": "string", "enum": SENSITIVE_CONTEXTS}},
         "dialogue_state": {"type": "string", "enum": ["completed_thought", "ongoing", "unclear"]},
         "confidence": UNIT,
+        "emotional_intensity": UNIT,
+        "valence": {"type": "number", "minimum": -1, "maximum": 1},
         "evidence": {"type": "array", "items": {"type": "string"}},
         "brand_matches": {"type": "array", "items": {
             "type": "object", "additionalProperties": False,
@@ -326,7 +328,8 @@ def judge_boundaries(candidates: list[dict], pool_frame: Callable[[float], str],
 SCENE_SYSTEM = (
     "You are a cautious Bengali drama scene analyst for contextual ad safety. Each scene comes with a few keyframes "
     "(tiled into one image) and its ASR dialogue. Summarise it briefly, list visible or spoken activities and the "
-    "mood, tag sensitive "
+    "mood, rate emotional_intensity from 0 (calm, everyday) to 1 (peak drama: confrontation, grief, danger, "
+    "revelation) and valence from -1 (distressing) to 1 (joyful), tag sensitive "
     "contexts only when supported, and state whether the dialogue ends on a completed thought. For every scene, score "
     "every supplied synthetic brand once from 0 to 1 against its target contexts, activity, and mood, with matched "
     "contexts and a short reason; an independent deterministic filter blocks negative contexts. Distinguish visible "

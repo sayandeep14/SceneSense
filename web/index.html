@@ -100,13 +100,29 @@
                 </div>
                 <div id="phase-status" class="phase-status hidden" aria-live="polite"></div>
                 <div class="timeline-empty">
-                  <div class="wave-area">
-                    <div class="wave-bars"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
-                    <div id="all-cut-markers" class="all-cut-markers" aria-label="All detected shot cuts"></div>
-                    <div id="potential-break-markers" class="potential-break-markers" aria-label="AI potential break points"></div>
-                    <div id="break-markers" class="break-markers hidden"></div>
-                    <span class="wave-start">00:00</span><span class="wave-end">—:—</span>
+                  <div class="timeline-zoom-bar">
+                    <span id="timeline-window" class="timeline-window">Whole programme</span>
+                    <div class="zoom-controls" role="group" aria-label="Timeline zoom">
+                      <button id="zoom-out" type="button" aria-label="Zoom out around the playhead" title="Zoom out (−)">−</button>
+                      <output id="zoom-level" aria-live="polite">1×</output>
+                      <button id="zoom-in" type="button" aria-label="Zoom in around the playhead" title="Zoom in (+)">+</button>
+                      <button id="zoom-fit" type="button" title="Show the whole programme (0)">Fit</button>
+                    </div>
                   </div>
+                  <p id="pacing-summary" class="pacing-summary hidden"></p>
+                  <div id="timeline-viewport" class="timeline-viewport" tabindex="0" aria-label="Programme timeline. Press plus or minus to zoom around the playhead, 0 to fit; Ctrl or Command plus scroll also zooms.">
+                    <div id="timeline-track" class="timeline-track">
+                      <div id="timeline-ruler" class="timeline-ruler" aria-hidden="true"></div>
+                      <div id="timeline-scenes" class="timeline-scenes" aria-hidden="true"></div>
+                      <div id="timeline-emotion" class="timeline-emotion"></div>
+                      <div id="all-cut-markers" class="all-cut-markers" aria-label="All detected shot cuts"></div>
+                      <div id="potential-break-markers" class="potential-break-markers" aria-label="AI potential break points"></div>
+                      <div id="break-markers" class="break-markers hidden"></div>
+                      <div id="timeline-playhead" class="timeline-playhead" aria-hidden="true"></div>
+                    </div>
+                    <div id="emotion-tooltip" class="emotion-tooltip hidden" role="status"></div>
+                  </div>
+                  <div class="timeline-lanes-legend" aria-hidden="true"><span>Ruler</span><span>Scenes</span><span>Emotional pacing</span><span>Cuts · scene changes · breaks</span></div>
                   <div class="review-controls"><label for="review-seek">PREVIEW POSITION <output id="review-time">00:00</output></label><input id="review-seek" type="range" min="0" max="0" step="0.1" value="0" aria-label="Seek precisely through the video"><button id="add-break-marker" class="outline-button" type="button">＋ Choose ad at playhead</button></div>
                   <div class="timeline-caption"><span class="timeline-spark">✳</span><div><strong id="timeline-empty-title">The story comes first.</strong><p id="timeline-empty-copy">Upload a video to get its first look. Bengali speech and scene analysis are the next milestone.</p></div></div>
                 </div>

@@ -33,13 +33,14 @@ const (
 	maxUploadBytes    = 500 << 20
 	analysisTimeout   = 20 * time.Minute
 	// These mirror ai/versions.py and ai/scene_ai.py; the cache-key parity test runs the Python worker.
-	scenePromptVer  = "scene-describe-v2-keyframe-grid"
+	scenePromptVer  = "scene-describe-v3-emotion"
 	breakPromptVer  = "scene-boundary-judge-v4-paired-frames"
 	analysisVersion = "scene-fusion-pipeline-v1"
 	shotDetectorVer = "pyscenedetect-adaptive-threshold+twin-dissolve-v1"
 	clipModelVer    = "clip-vit-b32-onnx-int8-d15189d"
 	audioModelVer   = "yamnet-onnx-qaihub-0.63.0"
 	fusionVer       = "scene-fusion-v1"
+	pacingVer       = "pacing-v1"
 	silenceDetector = "silencedetect:-32dB:0.45s"
 )
 
@@ -220,7 +221,7 @@ func currentAnalysisCacheKey(contentHash string) string {
 	}
 	parts := strings.Join([]string{
 		contentHash, provider, asrModel, sceneModel, scenePromptVer, breakModel, breakPromptVer, analysisVersion,
-		shotDetectorVer, clipModelVer, audioModelVer, fusionVer, embeddingModel, silenceDetector, brandCatalogHash,
+		shotDetectorVer, clipModelVer, audioModelVer, fusionVer, pacingVer, embeddingModel, silenceDetector, brandCatalogHash,
 	}, "|")
 	sum := sha256.Sum256([]byte(parts))
 	return hex.EncodeToString(sum[:])

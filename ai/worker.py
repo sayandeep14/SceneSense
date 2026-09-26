@@ -22,8 +22,8 @@ from typing import Any
 
 from scene_ai import (BOUNDARY_PROMPT_VERSION, KEYFRAMES_PER_SCENE, SCENE_DESCRIBE_PROMPT_VERSION, SENSITIVE_CONTEXTS,
                       SceneAIError, ad_friendliness, describe_scenes, judge_boundaries)
-from versions import (AUDIO_MODEL_VERSION, CLIP_MODEL_VERSION, EMBEDDING_MODEL, FUSION_VERSION, PIPELINE_CACHE_VERSION,
-                      SHOT_DETECTOR_VERSION)
+from versions import (AUDIO_MODEL_VERSION, CLIP_MODEL_VERSION, EMBEDDING_MODEL, FUSION_VERSION, PACING_VERSION,
+                      PIPELINE_CACHE_VERSION, SHOT_DETECTOR_VERSION)
 
 API_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
 SARVAM_API_URL = "https://api.sarvam.ai/speech-to-text"
@@ -498,7 +498,7 @@ def _cache_key(content_hash: str, brand_catalog_hash: str | None = None) -> str:
     parts = [
         content_hash, provider, _provider_model(provider), SCENE_MODEL, SCENE_DESCRIBE_PROMPT_VERSION,
         BREAK_MODEL, BOUNDARY_PROMPT_VERSION, PIPELINE_CACHE_VERSION, SHOT_DETECTOR_VERSION, CLIP_MODEL_VERSION,
-        AUDIO_MODEL_VERSION, FUSION_VERSION, EMBEDDING_MODEL, SILENCE_DETECTOR, brand_catalog_hash,
+        AUDIO_MODEL_VERSION, FUSION_VERSION, PACING_VERSION, EMBEDDING_MODEL, SILENCE_DETECTOR, brand_catalog_hash,
     ]
     return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
 
@@ -621,6 +621,12 @@ def _validate_scenes(
             "evidence": scene["evidence"],
             "brand_matches": ordered_matches,
         })
+        for field, low in (("emotional_intensity", 0.0), ("valence", -1.0)):
+            if field in scene:
+                value = scene[field]
+                if isinstance(value, bool) or not isinstance(value, (int, float)) or not low <= value <= 1:
+                    raise WorkerError(f"Scene analysis returned {field} outside its range.")
+                normalized[-1][field] = round(float(value), 3)
         previous_start = start
     return normalized
 
@@ -706,6 +712,7 @@ def analyze_programme(output: dict[str, Any], video_path: Path, work_dir: Path, 
     ad-friendliness. Fills `output` in place and records any stage that could not run."""
     import audio
     import fusion
+    import pacing
     import shots as shot_module
     import text_signals
     import visual
@@ -795,6 +802,7 @@ def analyze_programme(output: dict[str, Any], video_path: Path, work_dir: Path, 
             scene["shot_count"] = source["shot_count"]
         output["scenes"] = scenes
         output["scene_analysis_status"] = "complete"
+        output["pacing"] = pacing.build_pacing(duration, scenes, sound, times, [item["time"] for item in accepted])
 
         transitions, candidates = [], []
         for item in shortlist:
@@ -900,6 +908,7 @@ def run(request: dict[str, Any]) -> dict[str, Any]:
         "pipeline": {
             "version": PIPELINE_CACHE_VERSION, "shot_detector": SHOT_DETECTOR_VERSION,
             "visual_model": CLIP_MODEL_VERSION, "audio_model": AUDIO_MODEL_VERSION, "fusion": FUSION_VERSION,
+            "pacing": PACING_VERSION,
             "text_embedding_model": EMBEDDING_MODEL, "boundary_model": BREAK_MODEL, "scene_model": SCENE_MODEL,
         },
         "content_hash": content_hash, "cache_key": cache_key, "cache_hit": False,

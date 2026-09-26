@@ -32,10 +32,10 @@ func TestAnalysisCacheKeyIncludesConfiguredPipelineVersions(t *testing.T) {
 	brandCatalogHash := hex.EncodeToString(brandCatalogSum[:])
 	contentHash := "fixture-content-hash"
 	parts := strings.Join([]string{
-		contentHash, "groq", "whisper-large-v3-turbo", "gpt-4o-mini", "scene-describe-v2-keyframe-grid",
+		contentHash, "groq", "whisper-large-v3-turbo", "gpt-4o-mini", "scene-describe-v3-emotion",
 		"gpt-4o-mini", "scene-boundary-judge-v4-paired-frames", "scene-fusion-pipeline-v1",
 		"pyscenedetect-adaptive-threshold+twin-dissolve-v1", "clip-vit-b32-onnx-int8-d15189d", "yamnet-onnx-qaihub-0.63.0",
-		"scene-fusion-v1", "text-embedding-3-small", "silencedetect:-32dB:0.45s", brandCatalogHash,
+		"scene-fusion-v1", "pacing-v1", "text-embedding-3-small", "silencedetect:-32dB:0.45s", brandCatalogHash,
 	}, "|")
 	expected := sha256.Sum256([]byte(parts))
 	first := currentAnalysisCacheKey(contentHash)
@@ -63,10 +63,10 @@ func TestAnalysisCacheKeyIncludesConfiguredPipelineVersions(t *testing.T) {
 		t.Fatal("cache key did not change after the ASR provider changed")
 	}
 	parts = strings.Join([]string{
-		contentHash, "sarvam", "saaras:v4", "gpt-4o-mini", "scene-describe-v2-keyframe-grid",
+		contentHash, "sarvam", "saaras:v4", "gpt-4o-mini", "scene-describe-v3-emotion",
 		"gpt-4o-mini", "scene-boundary-judge-v4-paired-frames", "scene-fusion-pipeline-v1",
 		"pyscenedetect-adaptive-threshold+twin-dissolve-v1", "clip-vit-b32-onnx-int8-d15189d", "yamnet-onnx-qaihub-0.63.0",
-		"scene-fusion-v1", "text-embedding-3-small", "silencedetect:-32dB:0.45s", brandCatalogHash,
+		"scene-fusion-v1", "pacing-v1", "text-embedding-3-small", "silencedetect:-32dB:0.45s", brandCatalogHash,
 	}, "|")
 	expected = sha256.Sum256([]byte(parts))
 	if sarvamKey != hex.EncodeToString(expected[:]) {

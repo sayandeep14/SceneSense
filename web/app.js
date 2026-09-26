@@ -758,6 +758,199 @@
     if (activeJob?.transcript) renderBreakDecisions(activeJob);
   }
 
+  // Zoomable timeline. Zoom always anchors on the playhead: it keeps its place on screen, or the
+  // view centres on it when it is off screen. Markers are positioned in percent of the track.
+  const timelineViewport = document.querySelector("#timeline-viewport");
+  const timelineTrack = document.querySelector("#timeline-track");
+  const timelinePlayhead = document.querySelector("#timeline-playhead");
+  const timeline = { jobId: null, zoom: 1, duration: 0, following: false, startFraction: 0, trackWidth: 0 };
+  const MIN_VISIBLE_SECONDS = 10;
+  const maxZoom = () => Math.max(1, Math.min(256, timeline.duration / MIN_VISIBLE_SECONDS));
+  const spanLabel = (seconds) => seconds < 90 ? `${Math.round(seconds)} s` : formatDuration(seconds);
+
+  function renderTimeline(job) {
+    const duration = Number(job.media?.durationSeconds) || 0;
+    if (timeline.jobId !== job.id) {
+      Object.assign(timeline, { jobId: job.id, zoom: 1 });
+      timelineViewport.scrollLeft = 0;
+    }
+    timeline.duration = duration;
+    timeline.zoom = Math.min(timeline.zoom, maxZoom());
+    timelineTrack.style.width = `${timeline.zoom * 100}%`;
+    timelineTrack.dataset.detail = timeline.zoom >= 3 ? "on" : "off";
+    timeline.trackWidth = timelineTrack.clientWidth;
+    const bands = document.querySelector("#timeline-scenes");
+    bands.replaceChildren();
+    for (const scene of job.transcript?.scenes || []) {
+      if (!duration) break;
+      const band = document.createElement("span");
+      band.className = `timeline-scene${scene.sensitive_contexts?.length ? " timeline-scene-sensitive" : ""}`;
+      band.style.left = `${scene.start / duration * 100}%`;
+      band.style.width = `${Math.max(0, scene.end - scene.start) / duration * 100}%`;
+      band.textContent = (scene.tone || []).slice(0, 2).join(", ") || scene.summary;
+      bands.append(band);
+    }
+    renderEmotion(job);
+    renderRuler();
+    updatePlayhead(false);
+    updateZoomControls();
+  }
+
+  // Emotional pacing lane: an SVG area stretched across the track, so it zooms with the timeline.
+  function renderEmotion(job) {
+    const lane = document.querySelector("#timeline-emotion");
+    const summary = document.querySelector("#pacing-summary");
+    lane.replaceChildren();
+    const pacing = job.transcript?.pacing;
+    const duration = timeline.duration;
+    if (!pacing?.tension?.length || !duration) {
+      summary.classList.toggle("hidden", !job.transcript);
+      summary.textContent = job.transcript ? "Re-run scene analysis to see the emotional pacing map." : "";
+      if (job.transcript) {
+        const note = document.createElement("span");
+        note.className = "emotion-empty";
+        note.textContent = "Emotional pacing appears after scene analysis.";
+        lane.append(note);
+      }
+      return;
+    }
+    const top = [...pacing.peaks].sort((a, b) => b.value - a.value)[0];
+    summary.classList.remove("hidden");
+    summary.innerHTML = "";
+    const lead = document.createElement("strong");
+    lead.textContent = "Emotional pacing: ";
+    summary.append(lead, pacing.summary);
+    const count = pacing.tension.length;
+    const svgNS = "http://www.w3.org/2000/svg";
+    const svg = document.createElementNS(svgNS, "svg");
+    const width = count * pacing.step_sec / duration * 1000;
+    svg.setAttribute("viewBox", "0 0 1000 100");
+    svg.setAttribute("preserveAspectRatio", "none");
+    const points = pacing.tension.map((value, index) => `${(index * pacing.step_sec / duration * 1000).toFixed(2)},${(100 - value * 96).toFixed(1)}`);
+    svg.innerHTML = '<defs><linearGradient id="emotion-fill" x1="0" y1="0" x2="0" y2="1">' +
+      '<stop offset="0%" stop-color="#c8553d" stop-opacity=".55"/><stop offset="55%" stop-color="#e2a360" stop-opacity=".35"/>' +
+      '<stop offset="100%" stop-color="#8fbf95" stop-opacity=".2"/></linearGradient></defs>';
+    const mid = document.createElementNS(svgNS, "line");
+    Object.entries({ class: "emotion-mid", x1: 0, x2: 1000, y1: 52, y2: 52 }).forEach(([key, value]) => mid.setAttribute(key, value));
+    const area = document.createElementNS(svgNS, "path");
+    area.setAttribute("class", "emotion-area");
+    area.setAttribute("d", `M0,100 L${points.join(" L")} L${Math.min(1000, width).toFixed(2)},100 Z`);
+    const line = document.createElementNS(svgNS, "path");
+    line.setAttribute("class", "emotion-line");
+    line.setAttribute("d", `M${points.join(" L")}`);
+    svg.append(mid, area, line);
+    lane.append(svg);
+    for (const peak of pacing.peaks) {
+      if (peak.start !== undefined && peak.end !== undefined) {
+        const stretch = document.createElement("span");
+        stretch.className = `emotion-stretch${peak.kind === "cliffhanger" ? " emotion-stretch-cliffhanger" : ""}`;
+        stretch.style.left = `${peak.start / duration * 100}%`;
+        stretch.style.width = `${Math.max(0, peak.end - peak.start) / duration * 100}%`;
+        lane.append(stretch);
+      }
+      const marker = document.createElement("span");
+      marker.className = `emotion-peak${peak.kind === "cliffhanger" ? " emotion-peak-cliffhanger" : ""}`;
+      marker.style.left = `${peak.time / duration * 100}%`;
+      marker.style.top = `${100 - peak.value * 96}%`;
+      const label = document.createElement("span");
+      label.textContent = `${peak.kind === "cliffhanger" ? "cliffhanger" : "peak"}${peak.label ? ` · ${peak.label}` : ""}${peak === top ? " · most intense" : ""}`;
+      marker.append(label);
+      lane.append(marker);
+    }
+    for (const valley of pacing.valleys) {
+      const marker = document.createElement("span");
+      marker.className = "emotion-valley";
+      marker.style.left = `${valley.time / duration * 100}%`;
+      const label = document.createElement("span");
+      label.textContent = "calm";
+      marker.append(label);
+      lane.append(marker);
+    }
+  }
+
+  function pacingAt(pacing, time) {
+    const index = Math.min(pacing.tension.length - 1, Math.max(0, Math.round(time / pacing.step_sec)));
+    return { tension: pacing.tension[index], scene: pacing.components?.scene?.[index],
+      audio: pacing.components?.audio?.[index], cuts: pacing.components?.cuts?.[index] };
+  }
+
+  // The most recent dramatic peak shortly before a break, if any: the break then lands after a dramatic beat.
+  function peakBefore(pacing, time, window = 90) {
+    return (pacing?.peaks || []).filter((peak) => peak.time <= time && time - (peak.end ?? peak.time) <= window)
+      .sort((a, b) => b.time - a.time)[0];
+  }
+
+  function renderRuler() {
+    const ruler = document.querySelector("#timeline-ruler");
+    ruler.replaceChildren();
+    const duration = timeline.duration;
+    if (!duration) return;
+    const visible = duration / timeline.zoom;
+    const interval = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600].find((step) => visible / step <= 8) || 3600;
+    for (let at = 0; at < duration; at += interval) {
+      const tick = document.createElement("span");
+      tick.className = "timeline-tick";
+      tick.style.left = `${at / duration * 100}%`;
+      const label = document.createElement("span");
+      label.textContent = formatDuration(at);
+      tick.append(label);
+      ruler.append(tick);
+    }
+  }
+
+  function updateZoomControls() {
+    const duration = timeline.duration;
+    const zoom = timeline.zoom;
+    document.querySelector("#zoom-level").value = `${zoom < 10 ? Math.round(zoom * 10) / 10 : Math.round(zoom)}×`;
+    document.querySelector("#zoom-in").disabled = !duration || zoom >= maxZoom() - 0.001;
+    document.querySelector("#zoom-out").disabled = zoom <= 1.001;
+    document.querySelector("#zoom-fit").disabled = zoom <= 1.001;
+    const width = timelineTrack.clientWidth || 1;
+    const start = timelineViewport.scrollLeft / width * duration;
+    const visible = duration / zoom;
+    document.querySelector("#timeline-window").textContent = !duration ? "Whole programme"
+      : zoom <= 1.001 ? `Whole programme · ${formatDuration(duration)}`
+        : `${formatDuration(start)}–${formatDuration(Math.min(duration, start + visible))} · ${spanLabel(visible)} visible`;
+  }
+
+  function setZoom(next) {
+    const duration = timeline.duration;
+    if (!duration) return;
+    next = Math.min(maxZoom(), Math.max(1, next));
+    const viewWidth = timelineViewport.clientWidth;
+    const fraction = Math.min(1, Math.max(0, (previewVideo.currentTime || 0) / duration));
+    let anchor = fraction * timelineTrack.clientWidth - timelineViewport.scrollLeft;
+    if (anchor < 0 || anchor > viewWidth) anchor = viewWidth / 2;
+    timeline.zoom = next;
+    timelineTrack.style.width = `${next * 100}%`;
+    timelineTrack.dataset.detail = next >= 3 ? "on" : "off";
+    timelineViewport.scrollLeft = fraction * timelineTrack.clientWidth - anchor;
+    timeline.trackWidth = timelineTrack.clientWidth;
+    timeline.startFraction = timelineViewport.scrollLeft / (timeline.trackWidth || 1);
+    renderRuler();
+    updateZoomControls();
+  }
+
+  function updatePlayhead(follow) {
+    const duration = timeline.duration;
+    if (!duration) return;
+    const fraction = Math.min(1, Math.max(0, (previewVideo.currentTime || 0) / duration));
+    timelinePlayhead.style.left = `${fraction * 100}%`;
+    if (!follow || timeline.zoom <= 1.001) return;
+    const x = fraction * timelineTrack.clientWidth - timelineViewport.scrollLeft;
+    const viewWidth = timelineViewport.clientWidth;
+    if (x < 0 || x > viewWidth * 0.92) timelineViewport.scrollLeft = fraction * timelineTrack.clientWidth - viewWidth * 0.1;
+  }
+
+  function followPlayback() {
+    if (previewVideo.paused || previewVideo.ended) {
+      timeline.following = false;
+      return;
+    }
+    updatePlayhead(true);
+    window.requestAnimationFrame(followPlayback);
+  }
+
   const humanSize = (bytes) => {
     if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
     return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
@@ -808,11 +1001,11 @@
     document.querySelector("#asset-description").textContent = job.message;
     document.querySelector("#timeline-empty-title").textContent = job.transcript ? "Hear the story, moment by moment." : "The story comes first.";
     document.querySelector("#timeline-empty-copy").textContent = job.message;
-    document.querySelector(".wave-end").textContent = formatDuration(job.media.durationSeconds);
     renderPhaseStatus(job);
     renderTranscript(job);
     renderSceneEvidence(job);
     renderBreakDecisions(job);
+    renderTimeline(job);
     renderPlaybackEventHistory(job.playback_events || []);
 
     const video = document.querySelector("#video-preview");
@@ -986,7 +1179,9 @@
       const confidence = document.createElement("span");
       confidence.className = "scene-confidence";
       const sceneCuts = scene.shot_boundaries || [];
-      confidence.textContent = `${Math.round(scene.confidence * 100)}% confidence${sceneCuts.length ? ` · ${sceneCuts.length} cuts` : ""}`;
+      const feeling = scene.emotional_intensity === undefined ? ""
+        : ` · intensity ${Math.round(scene.emotional_intensity * 100)}%${scene.valence === undefined ? "" : ` · ${scene.valence > 0.2 ? "positive" : scene.valence < -0.2 ? "negative" : "neutral"} feeling`}`;
+      confidence.textContent = `${Math.round(scene.confidence * 100)}% confidence${sceneCuts.length ? ` · ${sceneCuts.length} cuts` : ""}${feeling}`;
       header.append(seek, confidence);
       const summary = document.createElement("p");
       summary.className = "scene-summary";
@@ -1261,7 +1456,14 @@
         };
         actions.append(toggle);
       }
-      item.append(header, rationale, context, signalBars(candidate.signal_scores), note, brandFit, actions);
+      const beat = peakBefore(transcript.pacing, candidate.time);
+      const pacingNote = document.createElement("p");
+      pacingNote.className = "break-pacing";
+      if (beat) {
+        pacingNote.textContent = `${beat.kind === "cliffhanger" ? "Cliffhanger break" : "After a dramatic beat"}: follows the ${formatDuration(beat.time)} peak` +
+          `${beat.label ? ` (${beat.label})` : ""}, ${Math.round(beat.value * 100)}% tension.`;
+      }
+      item.append(header, rationale, context, signalBars(candidate.signal_scores), ...(beat ? [pacingNote] : []), note, brandFit, actions);
       return item;
     };
     sceneChanges.forEach((candidate) => list.append(card(candidate)));
@@ -1402,6 +1604,11 @@
     for (const selector of ["#all-cut-markers", "#potential-break-markers", "#break-markers"]) {
       document.querySelector(selector).replaceChildren();
     }
+    Object.assign(timeline, { jobId: null, zoom: 1, duration: 0 });
+    timelineTrack.style.width = "100%";
+    for (const selector of ["#timeline-scenes", "#timeline-ruler", "#timeline-emotion"]) document.querySelector(selector).replaceChildren();
+    document.querySelector("#pacing-summary").classList.add("hidden");
+    updateZoomControls();
     document.querySelector("#timeline-empty-title").textContent = "The story comes first.";
     document.querySelector("#timeline-empty-copy").textContent = "Upload a video to get its first look.";
     input.value = "";
@@ -1593,6 +1800,70 @@
     reviewSeek.value = String(previewVideo.currentTime || 0);
     reviewTime.value = formatDuration(previewVideo.currentTime || 0);
   });
+  previewVideo.addEventListener("timeupdate", () => updatePlayhead(false));
+  previewVideo.addEventListener("seeked", () => updatePlayhead(true));
+  previewVideo.addEventListener("play", () => {
+    if (timeline.following) return;
+    timeline.following = true;
+    window.requestAnimationFrame(followPlayback);
+  });
+  document.querySelector("#zoom-in").addEventListener("click", () => setZoom(timeline.zoom * 2));
+  document.querySelector("#zoom-out").addEventListener("click", () => setZoom(timeline.zoom / 2));
+  document.querySelector("#zoom-fit").addEventListener("click", () => setZoom(1));
+  timelineViewport.addEventListener("scroll", () => {
+    // Scrolls caused by a layout change arrive before the resize callback; only user or zoom scrolls count.
+    if (timelineTrack.clientWidth === timeline.trackWidth) {
+      timeline.startFraction = timelineViewport.scrollLeft / (timeline.trackWidth || 1);
+    }
+    updateZoomControls();
+  }, { passive: true });
+  timelineViewport.addEventListener("wheel", (event) => {
+    // Ctrl/⌘ + scroll and trackpad pinch zoom around the playhead; plain scrolling pans.
+    if (!event.ctrlKey && !event.metaKey) return;
+    event.preventDefault();
+    setZoom(timeline.zoom * Math.exp(-event.deltaY * 0.0025));
+  }, { passive: false });
+  timelineViewport.addEventListener("keydown", (event) => {
+    if (event.target !== timelineViewport) return;
+    const actions = { "+": 2, "=": 2, "-": 0.5, "_": 0.5 };
+    if (event.key in actions) setZoom(timeline.zoom * actions[event.key]);
+    else if (event.key === "0") setZoom(1);
+    else return;
+    event.preventDefault();
+  });
+  timelineTrack.addEventListener("click", (event) => {
+    // Clicking the timeline (not a marker) moves the playhead there.
+    if (event.target.closest("button") || !timeline.duration) return;
+    const box = timelineTrack.getBoundingClientRect();
+    previewVideo.currentTime = Math.min(timeline.duration, Math.max(0, (event.clientX - box.left) / box.width * timeline.duration));
+    updatePlayhead(false);
+  });
+  const emotionTooltip = document.querySelector("#emotion-tooltip");
+  timelineTrack.addEventListener("mousemove", (event) => {
+    const pacing = activeJob?.transcript?.pacing;
+    const lane = document.querySelector("#timeline-emotion").getBoundingClientRect();
+    if (!pacing?.tension?.length || !timeline.duration || event.clientY < lane.top || event.clientY > lane.bottom) {
+      emotionTooltip.classList.add("hidden");
+      return;
+    }
+    const box = timelineTrack.getBoundingClientRect();
+    const time = (event.clientX - box.left) / box.width * timeline.duration;
+    const value = pacingAt(pacing, time);
+    const percent = (number) => number === null || number === undefined ? "—" : `${Math.round(number * 100)}%`;
+    emotionTooltip.textContent = `${formatDuration(time)} · tension ${percent(value.tension)} — scene ${percent(value.scene)}, audio ${percent(value.audio)}, editing ${percent(value.cuts)}`;
+    const viewport = timelineViewport.getBoundingClientRect();
+    emotionTooltip.style.left = `${Math.min(viewport.width - 240, Math.max(4, event.clientX - viewport.left + 10))}px`;
+    emotionTooltip.classList.remove("hidden");
+  });
+  timelineTrack.addEventListener("mouseleave", () => emotionTooltip.classList.add("hidden"));
+  // The track width is a percentage, so after a resize restore the same slice of the programme.
+  new ResizeObserver(() => {
+    const start = timeline.startFraction;
+    timeline.trackWidth = timelineTrack.clientWidth;
+    timelineViewport.scrollLeft = start * timeline.trackWidth;
+    timeline.startFraction = start;
+    updateZoomControls();
+  }).observe(timelineViewport);
   previewVideo.addEventListener("loadedmetadata", () => {
     reviewSeek.max = String(previewVideo.duration || 0);
   });

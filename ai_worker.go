@@ -39,6 +39,39 @@ type SceneEvidence struct {
 	ShotBoundaries    []float64         `json:"shot_boundaries"`
 	ShotCount         int               `json:"shot_count,omitempty"`
 	BrandMatches      []SceneBrandMatch `json:"brand_matches"`
+	// Emotional intensity (0-1) and valence (-1 to 1) from the scene model; absent on older analyses.
+	EmotionalIntensity *float64 `json:"emotional_intensity,omitempty"`
+	Valence            *float64 `json:"valence,omitempty"`
+}
+
+// PacingMap is the emotional pacing curve on a fixed grid, with its notable moments.
+type PacingMap struct {
+	Version    string        `json:"version"`
+	StepSec    float64       `json:"step_sec"`
+	Tension    []float64     `json:"tension"`
+	Components PacingParts   `json:"components"`
+	Peaks      []PacingPoint `json:"peaks"`
+	Valleys    []PacingPoint `json:"valleys"`
+	Summary    string        `json:"summary"`
+}
+
+type PacingParts struct {
+	Scene []*float64 `json:"scene"`
+	Audio []float64  `json:"audio"`
+	Cuts  []float64  `json:"cuts"`
+}
+
+type PacingPoint struct {
+	Time        float64  `json:"time"`
+	Value       float64  `json:"value"`
+	Label       string   `json:"label"`
+	SceneID     string   `json:"scene_id"`
+	Cue         string   `json:"cue"`
+	Driver      string   `json:"driver"`
+	Kind        string   `json:"kind,omitempty"`
+	Start       float64  `json:"start,omitempty"`
+	End         float64  `json:"end,omitempty"`
+	SceneChange *float64 `json:"scene_change,omitempty"`
 }
 
 type ShotTransition struct {
@@ -105,6 +138,7 @@ type Transcript struct {
 	UnheardSegmentCount  int                  `json:"unheard_segment_count"`
 	TextSignalError      string               `json:"text_signal_error,omitempty"`
 	Pipeline             map[string]string    `json:"pipeline,omitempty"`
+	Pacing               *PacingMap           `json:"pacing,omitempty"`
 	ShotDetectionStatus  string               `json:"shot_detection_status"`
 	ShotDetectionError   string               `json:"shot_detection_error,omitempty"`
 	ContentHash          string               `json:"content_hash"`
@@ -270,6 +304,9 @@ func validateTranscriptGo(transcript Transcript) error {
 		}
 		previousCut = cut
 	}
+	if err := validatePacing(transcript); err != nil {
+		return err
+	}
 	previousShot := 0.0
 	validShotKinds := map[string]bool{"cut": true, "fade": true, "dissolve": true}
 	for _, shot := range transcript.ShotTransitions {
@@ -306,6 +343,34 @@ func validateTranscriptGo(transcript Transcript) error {
 	}
 	if err := validateBreakCandidates(transcript); err != nil {
 		return err
+	}
+	return nil
+}
+
+func validatePacing(transcript Transcript) error {
+	for _, scene := range transcript.Scenes {
+		if (scene.EmotionalIntensity != nil && !unitInterval(*scene.EmotionalIntensity)) ||
+			(scene.Valence != nil && (math.IsNaN(*scene.Valence) || *scene.Valence < -1 || *scene.Valence > 1)) {
+			return errors.New("AI worker returned scene emotion outside its range")
+		}
+	}
+	pacing := transcript.Pacing
+	if pacing == nil {
+		return nil
+	}
+	if pacing.StepSec <= 0 || math.IsNaN(pacing.StepSec) || !unitInterval(pacing.Tension...) || !unitInterval(pacing.Components.Audio...) ||
+		!unitInterval(pacing.Components.Cuts...) || float64(len(pacing.Tension)) > transcript.Duration/pacing.StepSec+2 {
+		return errors.New("AI worker returned an invalid pacing curve")
+	}
+	for _, value := range pacing.Components.Scene {
+		if value != nil && !unitInterval(*value) {
+			return errors.New("AI worker returned an invalid pacing curve")
+		}
+	}
+	for _, point := range append(append([]PacingPoint{}, pacing.Peaks...), pacing.Valleys...) {
+		if point.Time < 0 || point.Time > transcript.Duration+pacing.StepSec || !unitInterval(point.Value) {
+			return errors.New("AI worker returned pacing moments outside the programme")
+		}
 	}
 	return nil
 }
