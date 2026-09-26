@@ -15,15 +15,20 @@ import sys
 import tempfile
 import urllib.error
 import urllib.request
+import wave
 from pathlib import Path
 from typing import Any
 
 API_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
+SARVAM_API_URL = "https://api.sarvam.ai/speech-to-text"
 OPENAI_API_URL = "https://api.openai.com/v1/responses"
 MODEL = "whisper-large-v3-turbo"
+SARVAM_MODEL = "saaras:v4"
+SARVAM_CHUNK_SECONDS = 25
+ASR_PROVIDER = os.environ.get("ASR_PROVIDER", "groq").strip().lower() or "groq"
 SCENE_MODEL = os.environ.get("OPENAI_VISION_MODEL", "gpt-4o-mini").strip() or "gpt-4o-mini"
 SCENE_PROMPT_VERSION = "scene-evidence-v2"
-PIPELINE_CACHE_VERSION = "phase2-cut-aware-v1"
+PIPELINE_CACHE_VERSION = "phase2-sarvam-asr-v1"
 CUT_DETECTION_THRESHOLD = 0.30
 MAX_AUDIO_BYTES = 25 * 1024 * 1024
 MAX_SCENE_FRAMES = 16
@@ -118,15 +123,21 @@ def load_brand_catalog(path: Path) -> list[dict[str, Any]]:
 
 def extract_audio(video_path: Path, work_dir: Path) -> Path:
     work_dir.mkdir(parents=True, exist_ok=True)
-    handle = tempfile.NamedTemporaryFile(prefix="transcription-", suffix=".mp3", dir=work_dir, delete=False)
+    provider = _asr_provider()
+    suffix = ".wav" if provider == "sarvam" else ".mp3"
+    handle = tempfile.NamedTemporaryFile(prefix="transcription-", suffix=suffix, dir=work_dir, delete=False)
     audio_path = Path(handle.name)
     handle.close()
+    audio_options = (
+        ["-c:a", "pcm_s16le", "-f", "wav"]
+        if provider == "sarvam"
+        else ["-c:a", "libmp3lame", "-b:a", "48k", "-f", "mp3"]
+    )
     try:
         subprocess.run(
             [
                 "ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", str(video_path),
-                "-map", "0:a:0", "-vn", "-ac", "1", "-ar", "16000", "-c:a", "libmp3lame",
-                "-b:a", "48k", "-f", "mp3", str(audio_path),
+                "-map", "0:a:0", "-vn", "-ac", "1", "-ar", "16000", *audio_options, str(audio_path),
             ],
             check=True,
             capture_output=True,
@@ -135,7 +146,7 @@ def extract_audio(video_path: Path, work_dir: Path) -> Path:
         size = audio_path.stat().st_size
         if size <= 0:
             raise WorkerError("The extracted audio is empty.")
-        if size > MAX_AUDIO_BYTES:
+        if provider == "groq" and size > MAX_AUDIO_BYTES:
             raise WorkerError(f"Compressed audio is {size / (1024 * 1024):.1f} MB; the current upload limit is 25 MB.")
         return audio_path
     except subprocess.TimeoutExpired as exc:
@@ -152,29 +163,7 @@ def extract_audio(video_path: Path, work_dir: Path) -> Path:
         raise
 
 
-def _multipart(audio_path: Path, filename: str) -> tuple[bytes, str]:
-    boundary = "----SceneSenseBoundary7MA4YWxkTrZu0gW"
-    chunks: list[bytes] = []
-    for name, value in (
-        ("model", MODEL),
-        ("language", "bn"),
-        ("response_format", "verbose_json"),
-        ("timestamp_granularities[]", "segment"),
-        ("timestamp_granularities[]", "word"),
-    ):
-        chunks.append(
-            f"--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n".encode()
-        )
-    safe_name = Path(filename).name.replace('"', "_")
-    chunks.append(
-        f"--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{safe_name}.mp3\"\r\nContent-Type: audio/mpeg\r\n\r\n".encode()
-    )
-    chunks.append(audio_path.read_bytes())
-    chunks.append(f"\r\n--{boundary}--\r\n".encode())
-    return b"".join(chunks), f"multipart/form-data; boundary={boundary}"
-
-
-def _validate_transcript(payload: dict[str, Any]) -> dict[str, Any]:
+def _validate_transcript(payload: dict[str, Any], model: str = MODEL) -> dict[str, Any]:
     duration = float(payload.get("duration") or 0)
     if duration < 0:
         raise WorkerError("The transcription provider returned an invalid duration.")
@@ -247,12 +236,47 @@ def _validate_transcript(payload: dict[str, Any]) -> dict[str, Any]:
             if timestamp_adjustments else str(payload.get("text", "")).strip()
         ),
         "segments": segments,
-        "model": MODEL,
+        "model": model,
         "timestamp_adjustments": timestamp_adjustments,
     }
 
 
-def transcribe(audio_path: Path, filename: str) -> dict[str, Any]:
+def _asr_provider() -> str:
+    provider = os.environ.get("ASR_PROVIDER", ASR_PROVIDER).strip().lower() or "groq"
+    if provider not in ("groq", "sarvam"):
+        raise WorkerError("ASR_PROVIDER must be either 'groq' or 'sarvam'.")
+    return provider
+
+
+def _provider_model(provider: str) -> str:
+    if provider == "sarvam":
+        return os.environ.get("SARVAM_ASR_MODEL", SARVAM_MODEL).strip() or SARVAM_MODEL
+    return os.environ.get("GROQ_ASR_MODEL", MODEL).strip() or MODEL
+
+
+def _multipart(audio_path: Path, filename: str) -> tuple[bytes, str]:
+    boundary = "----SceneSenseBoundary7MA4YWxkTrZu0gW"
+    chunks: list[bytes] = []
+    for name, value in (
+        ("model", _provider_model("groq")),
+        ("language", "bn"),
+        ("response_format", "verbose_json"),
+        ("timestamp_granularities[]", "segment"),
+        ("timestamp_granularities[]", "word"),
+    ):
+        chunks.append(
+            f"--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n".encode()
+        )
+    safe_name = Path(filename).name.replace('"', "_")
+    chunks.append(
+        f"--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{safe_name}.mp3\"\r\nContent-Type: audio/mpeg\r\n\r\n".encode()
+    )
+    chunks.append(audio_path.read_bytes())
+    chunks.append(f"\r\n--{boundary}--\r\n".encode())
+    return b"".join(chunks), f"multipart/form-data; boundary={boundary}"
+
+
+def _transcribe_groq(audio_path: Path, filename: str) -> dict[str, Any]:
     api_key = os.environ.get("GROQ_API_KEY", "").strip()
     if not api_key:
         raise WorkerError("GROQ_API_KEY is not configured for this service.")
@@ -299,7 +323,162 @@ def transcribe(audio_path: Path, filename: str) -> dict[str, Any]:
         raise WorkerError("Could not reach the transcription provider, or the request timed out.") from exc
     except (json.JSONDecodeError, OSError) as exc:
         raise WorkerError("The transcription provider returned an unreadable response.") from exc
-    return _validate_transcript(payload)
+    return _validate_transcript(payload, _provider_model("groq"))
+
+
+def _sarvam_multipart(audio_path: Path, model: str) -> tuple[bytes, str]:
+    boundary = "----SceneSenseSarvamBoundary" + hashlib.sha256(os.urandom(32)).hexdigest()[:24]
+    chunks: list[bytes] = []
+    for name, value in (
+        ("model", model),
+        ("language_code", "bn-IN"),
+        ("mode", "transcribe"),
+        ("with_timestamps", "true"),
+    ):
+        chunks.append(
+            f"--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n".encode()
+        )
+    chunks.append(
+        f"--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"audio.wav\"\r\nContent-Type: audio/wav\r\n\r\n".encode()
+    )
+    chunks.append(audio_path.read_bytes())
+    chunks.append(f"\r\n--{boundary}--\r\n".encode())
+    return b"".join(chunks), f"multipart/form-data; boundary={boundary}"
+
+
+def _split_sarvam_audio(audio_path: Path, work_dir: Path) -> tuple[Path, list[tuple[Path, float, float]]]:
+    chunk_dir = Path(tempfile.mkdtemp(prefix="sarvam-audio-", dir=work_dir))
+    pattern = chunk_dir / "chunk-%04d.wav"
+    try:
+        subprocess.run(
+            [
+                "ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", str(audio_path),
+                "-f", "segment", "-segment_time", str(SARVAM_CHUNK_SECONDS),
+                "-reset_timestamps", "1", "-c:a", "pcm_s16le", str(pattern),
+            ],
+            check=True, capture_output=True, timeout=7 * 60,
+        )
+        paths = sorted(chunk_dir.glob("chunk-*.wav"))
+        if not paths:
+            raise WorkerError("Could not split audio into Sarvam-sized chunks.")
+        chunks: list[tuple[Path, float, float]] = []
+        offset = 0.0
+        for path in paths:
+            with wave.open(str(path), "rb") as audio:
+                duration = audio.getnframes() / audio.getframerate()
+            if duration <= 0 or duration > SARVAM_CHUNK_SECONDS + 0.1:
+                raise WorkerError("Audio chunk duration is outside Sarvam REST limits.")
+            chunks.append((path, offset, duration))
+            offset += duration
+        return chunk_dir, chunks
+    except (OSError, subprocess.CalledProcessError, wave.Error) as exc:
+        shutil.rmtree(chunk_dir, ignore_errors=True)
+        raise WorkerError("Could not prepare audio chunks for Sarvam transcription.") from exc
+    except Exception:
+        shutil.rmtree(chunk_dir, ignore_errors=True)
+        raise
+
+
+def _sarvam_segments(payload: dict[str, Any], offset: float, duration: float) -> list[dict[str, Any]]:
+    transcript_text = payload.get("transcript")
+    if not isinstance(transcript_text, str):
+        raise WorkerError("Sarvam returned a response without transcript text.")
+    timestamps = payload.get("timestamps")
+    if not isinstance(timestamps, dict):
+        if transcript_text.strip():
+            raise WorkerError("Sarvam did not return phrase timestamps for the transcript.")
+        return []
+    texts = timestamps.get("words") or []
+    starts = timestamps.get("start_time_seconds") or []
+    ends = timestamps.get("end_time_seconds") or []
+    if not all(isinstance(values, list) for values in (texts, starts, ends)):
+        raise WorkerError("Sarvam returned invalid phrase timestamp arrays.")
+    if not (len(texts) == len(starts) == len(ends)):
+        raise WorkerError("Sarvam returned mismatched transcript timestamp arrays.")
+    if transcript_text.strip() and not texts:
+        return [{
+            "text": transcript_text.strip(), "start": offset, "end": offset + duration,
+            "words": [],
+        }]
+    segments: list[dict[str, Any]] = []
+    for text, start, end in zip(texts, starts, ends):
+        try:
+            start_sec, end_sec = float(start), float(end)
+        except (TypeError, ValueError) as exc:
+            raise WorkerError("Sarvam returned invalid phrase timestamps.") from exc
+        if (
+            not isinstance(text, str) or not text.strip()
+            or not math.isfinite(start_sec) or not math.isfinite(end_sec)
+            or start_sec < 0 or end_sec < start_sec or end_sec > duration + 0.1
+        ):
+            raise WorkerError("Sarvam returned invalid phrase timestamps.")
+        segments.append({
+            "text": text.strip(), "start": offset + start_sec, "end": offset + end_sec,
+            "words": [],
+        })
+    return segments
+
+
+def _transcribe_sarvam_chunk(audio_path: Path, model: str) -> dict[str, Any]:
+    api_key = os.environ.get("SARVAM_API_KEY", "").strip()
+    if not api_key:
+        raise WorkerError("SARVAM_API_KEY is not configured for this service.")
+    body, content_type = _sarvam_multipart(audio_path, model)
+    request = urllib.request.Request(
+        SARVAM_API_URL,
+        data=body,
+        headers={
+            "api-subscription-key": api_key,
+            "Content-Type": content_type,
+            "User-Agent": "hoichoi-contextual-ad-lab/0.1",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=8 * 60) as response:
+            return json.loads(response.read(12 * 1024 * 1024))
+    except urllib.error.HTTPError as exc:
+        code = None
+        try:
+            detail = json.loads(exc.read(64 * 1024))
+            error = detail.get("error", {}) if isinstance(detail, dict) else {}
+            raw_code = error.get("code") if isinstance(error, dict) else None
+            if isinstance(raw_code, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,80}", raw_code):
+                code = raw_code
+        except (json.JSONDecodeError, OSError):
+            pass
+        suffix = f" ({code})" if code else ""
+        raise WorkerError(f"Sarvam transcription returned HTTP {exc.code}{suffix}.") from exc
+    except (urllib.error.URLError, TimeoutError) as exc:
+        raise WorkerError("Could not reach Sarvam transcription, or the request timed out.") from exc
+    except (json.JSONDecodeError, OSError) as exc:
+        raise WorkerError("Sarvam returned an unreadable transcription response.") from exc
+
+
+def _transcribe_sarvam(audio_path: Path) -> dict[str, Any]:
+    model = _provider_model("sarvam")
+    chunk_dir, chunks = _split_sarvam_audio(audio_path, audio_path.parent)
+    try:
+        segments: list[dict[str, Any]] = []
+        for chunk_path, offset, duration in chunks:
+            payload = _transcribe_sarvam_chunk(chunk_path, model)
+            segments.extend(_sarvam_segments(payload, offset, duration))
+        normalized = _validate_transcript({
+            "language": "bn-IN",
+            "duration": sum(duration for _, _, duration in chunks),
+            "text": " ".join(segment["text"] for segment in segments),
+            "segments": segments,
+        }, f"sarvam/{model}")
+        return normalized
+    finally:
+        shutil.rmtree(chunk_dir, ignore_errors=True)
+
+
+def transcribe(audio_path: Path, filename: str) -> dict[str, Any]:
+    provider = _asr_provider()
+    if provider == "sarvam":
+        return _transcribe_sarvam(audio_path)
+    return _transcribe_groq(audio_path, filename)
 
 
 def detect_silences(video_path: Path, duration: float) -> list[dict[str, float]]:
@@ -368,8 +547,9 @@ def detect_shot_boundaries(video_path: Path, duration: float) -> list[float]:
 
 
 def _cache_key(content_hash: str) -> str:
+    provider = _asr_provider()
     parts = (
-        content_hash, MODEL, SCENE_MODEL, SCENE_PROMPT_VERSION,
+        content_hash, provider, _provider_model(provider), SCENE_MODEL, SCENE_PROMPT_VERSION,
         PIPELINE_CACHE_VERSION, str(MAX_SCENE_FRAMES), str(CUT_DETECTION_THRESHOLD),
         str(MAX_SHOT_BOUNDARIES_IN_PROMPT),
         "silencedetect:-32dB:0.45s",

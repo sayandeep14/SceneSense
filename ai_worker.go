@@ -172,7 +172,7 @@ func (s *server) transcribeJob(id string) {
 		return
 	}
 	job.Status, job.Stage, job.Progress = "processing", "transcribing_bengali_speech", 28
-	job.Message = "Extracting compact audio and transcribing Bengali speech with timestamps."
+	job.Message = "Preparing audio and transcribing Bengali speech with timestamps."
 	s.jobs[id] = job
 	if err := s.persistJob(job); err != nil {
 		s.logger.Error("persist running job state", "job_id", id, "error", err)
