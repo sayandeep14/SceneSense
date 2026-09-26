@@ -34,3 +34,4 @@ assets/*.ts
 # Local Python environment and downloaded ONNX models
 .venv/
 /models/
+telemetry/target/

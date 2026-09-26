@@ -311,6 +311,7 @@ func (s *server) saveReview(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) finalizePlan(w http.ResponseWriter, r *http.Request) {
+	started := time.Now()
 	job, ok := s.getJobSnapshot(r.PathValue("id"))
 	if !ok {
 		writeError(w, http.StatusNotFound, "Analysis job not found.")
@@ -381,6 +382,7 @@ func (s *server) finalizePlan(w http.ResponseWriter, r *http.Request) {
 		"revision": revision, "manifest": manifest, "plan": plan, "review": review,
 		"manifest_url": absoluteURL(r, "/api/jobs/"+current.ID+"/manifest.json?revision="+strconv.Itoa(revision)),
 	})
+	s.observeDuration(current.ID, "finalize", "ok", time.Since(started))
 }
 
 func (s *server) getManifest(w http.ResponseWriter, r *http.Request) {
